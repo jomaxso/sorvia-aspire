@@ -1,0 +1,29 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Aspire.Hosting.Dokploy</RootNamespace>
+    <PackageId>Sorvia.Aspire.Hosting.Dokploy</PackageId>
+    <PackageVersion>0.1.0</PackageVersion>
+    <Authors>jomaxso</Authors>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Description>Aspire hosting integration for Dokploy — a self-hosted PaaS. Provides AddDokployEnvironment() to deploy Aspire resources to a Dokploy instance via Docker Compose generation and the Dokploy REST API.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.Docker" Version="13.2.2" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.2.2" />
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.2.2" />
+    <PackageReference Include="Aspire.Hosting.MySql" Version="13.2.2" />
+    <PackageReference Include="Aspire.Hosting.MongoDB" Version="13.2.2" />
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
