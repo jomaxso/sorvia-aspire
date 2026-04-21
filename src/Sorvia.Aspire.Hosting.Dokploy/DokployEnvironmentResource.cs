@@ -347,60 +347,58 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
 
     private void RemoveDokploySpecificResourcesFromCompose(ComposeFile composeFile)
     {
-        if (_excludedComposeServices.Count == 0)
+        if (_excludedComposeServices.Count > 0)
         {
-            return;
-        }
-
-        foreach (var serviceName in _excludedComposeServices)
-        {
-            composeFile.Services.Remove(serviceName);
-        }
-
-        foreach (var service in composeFile.Services.Values)
-        {
-            var removedDependencies = service.DependsOn.Keys
-                .Where(_excludedComposeServices.Contains)
-                .ToArray();
-
-            foreach (var dependency in removedDependencies)
+            foreach (var serviceName in _excludedComposeServices)
             {
-                service.DependsOn.Remove(dependency);
+                composeFile.Services.Remove(serviceName);
             }
-        }
 
-        var usedVolumeNames = composeFile.Services.Values
-            .SelectMany(service => service.Volumes)
-            .Where(volume => !string.Equals(volume.Type, "bind", StringComparison.OrdinalIgnoreCase))
-            .Select(volume => volume.Source)
-            .OfType<string>()
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var service in composeFile.Services.Values)
+            {
+                var removedDependencies = service.DependsOn.Keys
+                    .Where(_excludedComposeServices.Contains)
+                    .ToArray();
 
-        foreach (var volumeName in composeFile.Volumes.Keys.Except(usedVolumeNames, StringComparer.OrdinalIgnoreCase).ToArray())
-        {
-            composeFile.Volumes.Remove(volumeName);
-        }
+                foreach (var dependency in removedDependencies)
+                {
+                    service.DependsOn.Remove(dependency);
+                }
+            }
 
-        var usedConfigNames = composeFile.Services.Values
-            .SelectMany(service => service.Configs)
-            .Select(config => config.Source)
-            .OfType<string>()
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var usedVolumeNames = composeFile.Services.Values
+                .SelectMany(service => service.Volumes)
+                .Where(volume => !string.Equals(volume.Type, "bind", StringComparison.OrdinalIgnoreCase))
+                .Select(volume => volume.Source)
+                .OfType<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var configName in composeFile.Configs.Keys.Except(usedConfigNames, StringComparer.OrdinalIgnoreCase).ToArray())
-        {
-            composeFile.Configs.Remove(configName);
-        }
+            foreach (var volumeName in composeFile.Volumes.Keys.Except(usedVolumeNames, StringComparer.OrdinalIgnoreCase).ToArray())
+            {
+                composeFile.Volumes.Remove(volumeName);
+            }
 
-        var usedSecretNames = composeFile.Services.Values
-            .SelectMany(service => service.Secrets)
-            .Select(secret => secret.Source)
-            .OfType<string>()
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var usedConfigNames = composeFile.Services.Values
+                .SelectMany(service => service.Configs)
+                .Select(config => config.Source)
+                .OfType<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var secretName in composeFile.Secrets.Keys.Except(usedSecretNames, StringComparer.OrdinalIgnoreCase).ToArray())
-        {
-            composeFile.Secrets.Remove(secretName);
+            foreach (var configName in composeFile.Configs.Keys.Except(usedConfigNames, StringComparer.OrdinalIgnoreCase).ToArray())
+            {
+                composeFile.Configs.Remove(configName);
+            }
+
+            var usedSecretNames = composeFile.Services.Values
+                .SelectMany(service => service.Secrets)
+                .Select(secret => secret.Source)
+                .OfType<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var secretName in composeFile.Secrets.Keys.Except(usedSecretNames, StringComparer.OrdinalIgnoreCase).ToArray())
+            {
+                composeFile.Secrets.Remove(secretName);
+            }
         }
 
         CapturePublishedComposeServices(composeFile);
