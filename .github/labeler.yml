@@ -1,0 +1,34 @@
+area/github:
+    - changed-files:
+          - any-glob-to-any-file:
+                - ".github/**"
+
+area/docs:
+    - changed-files:
+          - any-glob-to-any-file:
+                - "README.md"
+                - "LICENSE"
+                - "src/Sorvia.Aspire.Hosting.Dokploy/README.md"
+                - "docs/**"
+
+area/package:
+    - changed-files:
+          - any-glob-to-any-file:
+                - "src/Sorvia.Aspire.Hosting.Dokploy/**"
+                - "dokployOpenApiDocument.json"
+
+area/demo:
+    - changed-files:
+          - any-glob-to-any-file:
+                - "demo/**"
+
+area/repository:
+    - changed-files:
+          - any-glob-to-any-file:
+                - ".gitignore"
+                - "aspire.config.json"
+                - "Directory.Build.props"
+                - "Directory.Packages.props"
+                - "global.json"
+                - "*.sln"
+                - "*.slnx"

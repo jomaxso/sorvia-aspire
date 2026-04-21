@@ -1,0 +1,79 @@
+name: Publish to NuGet
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Detect version change
+        id: version
+        shell: pwsh
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          $projectPath = 'src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj'
+          [xml]$project = Get-Content $projectPath
+          $currentVersion = @($project.Project.PropertyGroup.Version)[0]
+          if ([string]::IsNullOrWhiteSpace($currentVersion)) {
+            throw "Package version is missing in the project file."
+          }
+
+          "current_version=$currentVersion" >> $env:GITHUB_OUTPUT
+
+          if ([string]::IsNullOrWhiteSpace($env:BEFORE_SHA) -or $env:BEFORE_SHA -match '^0+$') {
+            "previous_version=" >> $env:GITHUB_OUTPUT
+            "version_changed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $previousProjectContent = git show "${env:BEFORE_SHA}:$projectPath" 2>$null
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($previousProjectContent)) {
+            "previous_version=" >> $env:GITHUB_OUTPUT
+            "version_changed=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          [xml]$previousProject = $previousProjectContent
+          $previousVersion = @($previousProject.Project.PropertyGroup.Version)[0]
+          "previous_version=$previousVersion" >> $env:GITHUB_OUTPUT
+          "version_changed=$([string]($previousVersion -ne $currentVersion).ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Stop when package version did not change
+        if: steps.version.outputs.version_changed != 'true'
+        shell: pwsh
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.current_version }}
+        run: |
+          Write-Host "Package version unchanged ($env:CURRENT_VERSION). Skipping NuGet publish."
+
+      - name: Pack
+        if: steps.version.outputs.version_changed == 'true'
+        run: dotnet pack src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj -c Release -p:ContinuousIntegrationBuild=true -o ./artifacts
+
+      - name: NuGet login (OIDC)
+        if: steps.version.outputs.version_changed == 'true'
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to NuGet
+        if: steps.version.outputs.version_changed == 'true'
+        run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

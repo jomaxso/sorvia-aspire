@@ -51,6 +51,47 @@ demo/
 dotnet build
 ```
 
+## Packaging
+
+Before the first publish, verify the package locally:
+
+```shell
+dotnet pack -c Release -o ./artifacts src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj
+```
+
+GitHub Actions is split into:
+
+- `ci.yml` for restore, build, and pack validation
+- `publish.yml` for automatic publishing to nuget.org when the package version changes on `main`
+
+## NuGet Trusted Publishing
+
+The repository is set up for **nuget.org trusted publishing** with GitHub Actions OIDC.
+
+Create the trusted publishing policy on nuget.org with these exact values:
+
+| Setting | Value |
+|---------|-------|
+| Repository Owner | `jomaxso` |
+| Repository | `sorvia-aspire` |
+| Workflow File | `publish.yml` |
+| Environment | *(leave blank)* |
+
+In GitHub, add this repository secret:
+
+| Secret | Value |
+|--------|-------|
+| `NUGET_USER` | nuget.org username |
+
+Release flow:
+
+```shell
+# bump <Version> in the package project
+git add src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj
+git commit -m "Bump package version to 0.1.0"
+git push origin main
+```
+
 ## License
 
 [MIT](LICENSE)

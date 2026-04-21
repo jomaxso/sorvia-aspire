@@ -5,12 +5,18 @@
     <LangVersion>preview</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
     <RootNamespace>Aspire.Hosting.Dokploy</RootNamespace>
     <PackageId>Sorvia.Aspire.Hosting.Dokploy</PackageId>
-    <PackageVersion>0.1.0</PackageVersion>
+    <Version>0.1.0</Version>
     <Authors>jomaxso</Authors>
+    <PackageProjectUrl>https://github.com/jomaxso/sorvia-aspire</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>aspire;dokploy;deployment;docker;dotnet</PackageTags>
     <Description>Aspire hosting integration for Dokploy — a self-hosted PaaS. Provides AddDokployEnvironment() to deploy Aspire resources to a Dokploy instance via Docker Compose generation and the Dokploy REST API.</Description>
+    <RepositoryUrl>https://github.com/jomaxso/sorvia-aspire</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
