@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIREINTERACTION001 // Custom deploy prompts use Aspire's experimental interaction API
+
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Docker;
 using Aspire.Hosting.Dokploy;
@@ -49,9 +51,9 @@ namespace Aspire.Hosting;
 ///
 /// <para><b>Configuration:</b></para>
 /// <para>
-    /// The Dokploy server URL, API key, and project name are captured as Aspire parameters
-    /// when <c>aspire deploy</c> needs them. Plain <c>aspire publish</c> can still generate
-    /// Docker Compose artifacts without Dokploy credentials.
+    /// The Dokploy server URL, API key, project name, and deployment environment are captured
+    /// as Aspire parameters when <c>aspire deploy</c> needs them. Plain <c>aspire publish</c>
+    /// can still generate Docker Compose artifacts without Dokploy credentials.
 /// </para>
 /// </remarks>
 public static class DokployEnvironmentExtensions
@@ -106,7 +108,7 @@ public static class DokployEnvironmentExtensions
     /// var builder = DistributedApplication.CreateBuilder(args);
     ///
     /// // Add Dokploy as the deployment target. The first deploy will prompt
-    /// // for the Dokploy server URL, API key, and project name.
+    /// // for the Dokploy server URL, API key, project name, and environment.
     /// builder.AddDokployEnvironment("my-roadmap");
     ///
     /// // ... add other resources ...
@@ -129,7 +131,7 @@ public static class DokployEnvironmentExtensions
 
         var resource = new DokployEnvironmentResource(name)
         {
-            DeploymentEnvironmentName = builder.Environment.EnvironmentName
+            DeploymentEnvironmentName = "production"
         };
 
         var dashboard = ((IResourceBuilder<DockerComposeAspireDashboardResource>)s_createDashboardMethod.Invoke(null, [builder, "aspire-dashboard"])!)
@@ -149,6 +151,19 @@ public static class DokployEnvironmentExtensions
         resource.ServerUrlParameter = builder.AddParameter("dokploy-url").Resource;
         resource.ApiKeyParameter = builder.AddParameter("dokploy-api-key", secret: true).Resource;
         resource.ProjectNameParameter = builder.AddParameter("dokploy-project-name").Resource;
+        resource.DeploymentEnvironmentNameParameter = builder.AddParameter("dokploy-environment")
+            .WithDescription("Target Dokploy environment inside the project. Leave empty to use production.")
+            .WithCustomInput(parameter => new()
+            {
+                Name = parameter.Name,
+                Label = "Dokploy environment",
+                Description = parameter.Description,
+                InputType = InputType.Text,
+                Placeholder = "production",
+                Value = "production",
+                Required = false
+            })
+            .Resource;
 
         // In publish mode, add the resource to the application model
         // but exclude it from the manifest (it's not a traditional publishable resource).

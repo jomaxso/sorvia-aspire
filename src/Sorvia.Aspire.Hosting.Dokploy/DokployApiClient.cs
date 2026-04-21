@@ -20,6 +20,7 @@ namespace Aspire.Hosting.Dokploy;
 internal sealed class DokployApiClient : IDisposable
 {
     private readonly HttpClient _httpClient;
+    private readonly string _serverUrl;
 
     /// <summary>JSON options that include null values (Dokploy requires all schema fields to be present).</summary>
     private static readonly JsonSerializerOptions s_jsonOptions = new()
@@ -40,25 +41,61 @@ internal sealed class DokployApiClient : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(serverUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
 
-        // Normalize: strip trailing /api or /api/ if user included it in the URL
-        var normalized = serverUrl.TrimEnd('/');
-        if (normalized.EndsWith("/api", StringComparison.OrdinalIgnoreCase))
-            normalized = normalized[..^4];
+        _serverUrl = NormalizeServerUrl(serverUrl);
 
         _httpClient = new HttpClient
         {
-            BaseAddress = new Uri(normalized + "/api/"),
+            BaseAddress = new Uri(_serverUrl + "/api/"),
             Timeout = TimeSpan.FromMinutes(5)
         };
         _httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
     }
+
+    internal static string NormalizeServerUrl(string serverUrl)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverUrl);
+
+        var normalized = serverUrl.Trim();
+        if (!normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = "https://" + normalized;
+        }
+
+        normalized = normalized.TrimEnd('/');
+        if (normalized.EndsWith("/api", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized[..^4];
+        }
+
+        if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new InvalidOperationException(
+                $"Dokploy server URL '{serverUrl}' is invalid. Enter a full URL or host name. Host names without a scheme default to https://.");
+        }
+
+        return uri.ToString().TrimEnd('/');
+    }
+
+    private string CreateServerAccessHint(string details)
+        => $"Could not reach Dokploy server '{_serverUrl}'. If you entered only a host name, https:// is assumed automatically. If your Dokploy instance only responds over http:// or uses a different URL, update the server URL and try again. {details}";
 
     /// <summary>
     /// Posts JSON and throws a descriptive exception on failure (includes response body).
     /// </summary>
     private async Task<HttpResponseMessage> PostJsonAsync<T>(string endpoint, T payload, JsonSerializerOptions? options = null, CancellationToken ct = default)
     {
-        var response = await _httpClient.PostAsJsonAsync(endpoint, payload, options ?? s_jsonOptions, ct).ConfigureAwait(false);
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.PostAsJsonAsync(endpoint, payload, options ?? s_jsonOptions, ct).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HttpRequestException(CreateServerAccessHint(ex.Message), ex, ex.StatusCode);
+        }
+
         await EnsureSuccessAsync(response, endpoint, ct).ConfigureAwait(false);
         return response;
     }
@@ -68,7 +105,16 @@ internal sealed class DokployApiClient : IDisposable
     /// </summary>
     private async Task<HttpResponseMessage> GetJsonAsync(string endpoint, CancellationToken ct = default)
     {
-        var response = await _httpClient.GetAsync(endpoint, ct).ConfigureAwait(false);
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.GetAsync(endpoint, ct).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new HttpRequestException(CreateServerAccessHint(ex.Message), ex, ex.StatusCode);
+        }
+
         await EnsureSuccessAsync(response, endpoint, ct).ConfigureAwait(false);
         return response;
     }

@@ -46,13 +46,14 @@ builder.Build().Run();
 
 | Parameter | Description |
 |-----------|-------------|
-| `dokploy-url` | Base URL of the Dokploy instance |
+| `dokploy-url` | Base URL of the Dokploy instance; if the scheme is omitted, `https://` is assumed |
 | `dokploy-api-key` | API key (secret) |
 | `dokploy-project-name` | Target Dokploy project name |
+| `dokploy-environment` | Target Dokploy environment inside the project (defaults to `production`) |
 
-When `aspire deploy` runs, Aspire prompts for those values and stores them in deployment state. Re-runs reuse the saved values. Plain `aspire publish` can still generate Docker Compose artifacts without Dokploy credentials.
+When `aspire deploy` runs, Aspire prompts for those values and stores them in deployment state. The Dokploy environment prompt is prefilled with `production`, and an empty value also falls back to `production`. For `dokploy-url`, a host name without `http://` or `https://` is treated as `https://...`. Re-runs reuse the saved values. Plain `aspire publish` can still generate Docker Compose artifacts without Dokploy credentials.
 
-The name passed to `AddDokployEnvironment(...)` is the Aspire resource name. The actual Dokploy project name comes from the `dokploy-project-name` parameter. The Dokploy environment inside that project defaults to the current Aspire environment name, normalized to lowercase (e.g. `Production` → `production`).
+The name passed to `AddDokployEnvironment(...)` is the Aspire resource name. The actual Dokploy project name comes from the `dokploy-project-name` parameter. The Dokploy environment inside that project comes from the `dokploy-environment` parameter and defaults to `production`.
 
 ### Optional Settings
 

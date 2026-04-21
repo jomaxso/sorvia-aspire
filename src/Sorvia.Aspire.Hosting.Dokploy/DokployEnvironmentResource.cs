@@ -39,6 +39,7 @@ namespace Aspire.Hosting.Dokploy;
 /// </remarks>
 public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmentResource
 {
+    private const string DefaultDeploymentEnvironmentName = "production";
     private static readonly TimeSpan s_registryBootstrapTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_registryProbeInterval = TimeSpan.FromSeconds(5);
 
@@ -109,9 +110,15 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
 
     /// <summary>
     /// The Dokploy environment name to deploy into within the target project.
-    /// Defaults to the current Aspire environment name and is normalized to Dokploy's lowercase convention.
+    /// Defaults to <c>production</c> and is normalized to Dokploy's lowercase convention.
     /// </summary>
     internal string? DeploymentEnvironmentName { get; set; }
+
+    /// <summary>
+    /// The parameter resource providing the Dokploy environment name.
+    /// When set, takes precedence over the <see cref="DeploymentEnvironmentName"/> string value.
+    /// </summary>
+    public ParameterResource? DeploymentEnvironmentNameParameter { get; set; }
 
     /// <summary>
     /// The default container registry for resources that don't have an explicit
@@ -190,8 +197,16 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
     /// <summary>
     /// Resolves the Dokploy environment name used for deployments within the target project.
     /// </summary>
-    internal string ResolveDeploymentEnvironmentName()
-        => NormalizeDokployEnvironmentName(DeploymentEnvironmentName);
+    internal async Task<string> ResolveDeploymentEnvironmentNameAsync(CancellationToken ct)
+    {
+        if (DeploymentEnvironmentNameParameter is not null)
+        {
+            return NormalizeDokployEnvironmentName(
+                await DeploymentEnvironmentNameParameter.GetValueAsync(ct).ConfigureAwait(false));
+        }
+
+        return NormalizeDokployEnvironmentName(DeploymentEnvironmentName ?? DefaultDeploymentEnvironmentName);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DokployEnvironmentResource"/> class.
@@ -429,7 +444,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
             environment,
             "Validating Dokploy configuration").ConfigureAwait(false);
         var applicationName = await environment.ResolveProjectNameAsync(ct).ConfigureAwait(false);
-        var deploymentEnvironmentName = environment.ResolveDeploymentEnvironmentName();
+        var deploymentEnvironmentName = await environment.ResolveDeploymentEnvironmentNameAsync(ct).ConfigureAwait(false);
         var serverId = await environment.ResolveServerIdAsync(ct).ConfigureAwait(false);
 
         using var client = new DokployApiClient(serverUrlResolved, apiKeyResolved);
@@ -633,6 +648,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         {
             var serverUrl = await environment.ResolveServerUrlAsync(ct).ConfigureAwait(false);
             var apiKey = await environment.ResolveApiKeyAsync(ct).ConfigureAwait(false);
+            string normalizedServerUrl;
 
             if (string.IsNullOrWhiteSpace(serverUrl))
             {
@@ -648,12 +664,35 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 throw new InvalidOperationException(message);
             }
 
+            try
+            {
+                normalizedServerUrl = DokployApiClient.NormalizeServerUrl(serverUrl);
+            }
+            catch (InvalidOperationException ex)
+            {
+                await validateTask.CompleteAsync(ex.Message, CompletionState.CompletedWithError, ct).ConfigureAwait(false);
+                throw;
+            }
+
+            try
+            {
+                using var client = new DokployApiClient(normalizedServerUrl, apiKey);
+                _ = await client.ListProjectsAsync(ct).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex)
+            {
+                var message =
+                    $"Could not access Dokploy server '{normalizedServerUrl}'. If you entered only a host name, https:// is assumed automatically. If your Dokploy instance only responds over http:// or uses a different URL, update the server URL and try again. {ex.Message}";
+                await validateTask.CompleteAsync(message, CompletionState.CompletedWithError, ct).ConfigureAwait(false);
+                throw new InvalidOperationException(message, ex);
+            }
+
             await validateTask.CompleteAsync(
-                $"Configuration validated — server: {serverUrl}",
+                $"Configuration validated — server: {normalizedServerUrl}",
                 CompletionState.Completed,
                 ct).ConfigureAwait(false);
 
-            return (serverUrl, apiKey);
+            return (normalizedServerUrl, apiKey);
         }
     }
 
@@ -2918,7 +2957,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
     {
         if (string.IsNullOrWhiteSpace(environmentName))
         {
-            return "production";
+            return DefaultDeploymentEnvironmentName;
         }
 
         return environmentName.Trim().ToLowerInvariant();

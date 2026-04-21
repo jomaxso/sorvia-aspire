@@ -29,6 +29,8 @@ builder.Build().Run();
 ```
 
 When running locally, the Dokploy resource is a no-op — everything runs as usual. When publishing (`dotnet run --publisher dokploy`), the integration generates Docker Compose artifacts and deploys them to your Dokploy instance via the REST API.
+The deploy prompt also asks for the target Dokploy environment and offers `production` as the default; empty input falls back to `production`.
+If you enter the Dokploy host without `http://` or `https://`, the deploy flow assumes `https://`.
 
 ## Repository Structure
 
