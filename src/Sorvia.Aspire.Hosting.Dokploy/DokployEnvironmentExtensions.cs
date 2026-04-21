@@ -132,7 +132,7 @@ public static class DokployEnvironmentExtensions
             DeploymentEnvironmentName = builder.Environment.EnvironmentName
         };
 
-        var dashboard = ((IResourceBuilder<DockerComposeAspireDashboardResource>)s_createDashboardMethod.Invoke(null, [builder, $"{name}-dashboard"])!)
+        var dashboard = ((IResourceBuilder<DockerComposeAspireDashboardResource>)s_createDashboardMethod.Invoke(null, [builder, "aspire-dashboard"])!)
             .PublishAsDockerComposeService((_, service) =>
             {
                 service.Restart = "always";

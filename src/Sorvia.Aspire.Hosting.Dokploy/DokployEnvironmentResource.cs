@@ -544,18 +544,6 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
             }
         }
 
-        if (autoRegistry is not null)
-        {
-            await EnsureWatchtowerComposeAsync(
-                context,
-                client,
-                projectEnvironment,
-                serverId,
-                project.Name,
-                computeResources,
-                ct).ConfigureAwait(false);
-        }
-
         var deployTask = await context.ReportingStep.CreateTaskAsync(
             $"Deploying {configuredApplications.Count} application(s) to Dokploy", ct).ConfigureAwait(false);
         await using (deployTask.ConfigureAwait(false))
@@ -1410,73 +1398,6 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
             $"{containerCli.FileName} login failed with exit code {lastResult.ExitCode}: {lastResult.StandardError}{Environment.NewLine}{lastResult.StandardOutput}".Trim());
     }
 
-    private static async Task EnsureWatchtowerComposeAsync(
-        PipelineStepContext context,
-        DokployApiClient client,
-        DokployProjectEnvironment projectEnvironment,
-        string? serverId,
-        string projectName,
-        IReadOnlyList<IResource> computeResources,
-        CancellationToken ct)
-    {
-        var containerNames = computeResources
-            .Select(resource => SanitizeName(resource.Name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        if (containerNames.Length == 0)
-        {
-            return;
-        }
-
-        var watchtowerName = $"{SanitizeName(projectName)}-watchtower";
-        var watchtowerTask = await context.ReportingStep.CreateTaskAsync(
-            $"Deploying watchtower stack '{watchtowerName}'", ct).ConfigureAwait(false);
-        await using (watchtowerTask.ConfigureAwait(false))
-        {
-            try
-            {
-                var existingCompose = ReuseLatest(
-                    await client.SearchComposesAsync(watchtowerName, projectEnvironment.EnvironmentId, ct).ConfigureAwait(false),
-                    projectEnvironment.EnvironmentId,
-                    watchtowerName,
-                    compose => compose.Name,
-                    compose => compose.EnvironmentId,
-                    compose => compose.CreatedAt,
-                    context.Logger,
-                    "compose service");
-
-                var compose = existingCompose ?? await client.CreateComposeAsync(
-                    watchtowerName,
-                    projectEnvironment.EnvironmentId,
-                    description: $"Watchtower for Dokploy project {projectName}",
-                    serverId: serverId,
-                    ct: ct).ConfigureAwait(false);
-
-                await client.UpdateComposeAsync(
-                    compose.ComposeId,
-                    BuildWatchtowerComposeFile(containerNames),
-                    env: null,
-                    ct: ct).ConfigureAwait(false);
-
-                await client.DeployComposeAsync(compose.ComposeId, ct).ConfigureAwait(false);
-
-                await watchtowerTask.CompleteAsync(
-                    $"Watchtower is monitoring {containerNames.Length} container target(s)",
-                    CompletionState.Completed,
-                    ct).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                await watchtowerTask.CompleteAsync(
-                    $"Watchtower deployment failed: {ex.Message}",
-                    CompletionState.CompletedWithError,
-                    ct).ConfigureAwait(false);
-                throw;
-            }
-        }
-    }
-
     private static async Task RunContainerCommandAsync(
         string containerCli,
         string command,
@@ -1686,31 +1607,6 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         builder.AppendLine("      - \"registry-data:/var/lib/registry\"");
         builder.AppendLine("volumes:");
         builder.AppendLine("  registry-data: {}");
-        return builder.ToString();
-    }
-
-    private static string BuildWatchtowerComposeFile(IReadOnlyList<string> containerNames)
-    {
-        var builder = new StringBuilder();
-        builder.AppendLine("services:");
-        builder.AppendLine("  watchtower:");
-        builder.AppendLine("    image: \"containrrr/watchtower:1.7.1\"");
-        builder.AppendLine("    restart: \"unless-stopped\"");
-        builder.AppendLine("    environment:");
-        builder.AppendLine("      DOCKER_CONFIG: \"/config\"");
-        builder.AppendLine("    command:");
-        builder.AppendLine("      - \"--interval\"");
-        builder.AppendLine("      - \"30\"");
-        builder.AppendLine("      - \"--cleanup\"");
-        builder.AppendLine("      - \"--rolling-restart\"");
-        foreach (var containerName in containerNames)
-        {
-            builder.AppendLine($"      - \"{containerName}\"");
-        }
-
-        builder.AppendLine("    volumes:");
-        builder.AppendLine("      - \"/var/run/docker.sock:/var/run/docker.sock\"");
-        builder.AppendLine("      - \"/root/.docker:/config:ro\"");
         return builder.ToString();
     }
 
