@@ -46,13 +46,14 @@ builder.Build().Run();
 
 | Parameter | Description |
 |-----------|-------------|
-| `dokploy-url` | Base URL of the Dokploy instance |
+| `dokploy-url` | Base URL of the Dokploy instance; if the scheme is omitted, `https://` is assumed |
 | `dokploy-api-key` | API key (secret) |
 | `dokploy-project-name` | Target Dokploy project name |
+| `dokploy-environment` | Target Dokploy environment inside the project (defaults to `production`) |
 
-When `aspire deploy` runs, Aspire prompts for those values and stores them in deployment state. Re-runs reuse the saved values. Plain `aspire publish` can still generate Docker Compose artifacts without Dokploy credentials.
+When `aspire deploy` runs, Aspire prompts for those values and stores them in deployment state. The Dokploy environment prompt is prefilled with `production`, and an empty value also falls back to `production`. For `dokploy-url`, a host name without `http://` or `https://` is treated as `https://...`. Re-runs reuse the saved values. Plain `aspire publish` can still generate Docker Compose artifacts without Dokploy credentials.
 
-The name passed to `AddDokployEnvironment(...)` is the Aspire resource name. The actual Dokploy project name comes from the `dokploy-project-name` parameter. The Dokploy environment inside that project defaults to the current Aspire environment name, normalized to lowercase (e.g. `Production` → `production`).
+The name passed to `AddDokployEnvironment(...)` is the Aspire resource name. The actual Dokploy project name comes from the `dokploy-project-name` parameter. The Dokploy environment inside that project comes from the `dokploy-environment` parameter and defaults to `production`.
 
 ### Optional Settings
 
@@ -84,6 +85,32 @@ When enabled:
 Container images built from `ProjectResource` instances need a registry so the Dokploy server can pull them.
 
 **Without explicit configuration**, the integration bootstraps a **project-scoped private registry on Dokploy** automatically — creating a `registry:2` compose stack, configuring an `sslip.io` domain with Let's Encrypt, registering it in Dokploy, and pushing the built images.
+
+## Domain Management
+
+Application domains are managed automatically during publish-mode deploys.
+
+- A domain is created for a resource only when it exposes an external `http` or `https` endpoint. In practice this usually means opting the resource into public endpoints with Aspire methods such as `.WithExternalHttpEndpoints()`. The Aspire Dashboard is treated as public by default and is included in the same logic.
+- If a resource no longer has a managed external `http`/`https` endpoint, previously managed Dokploy domains for that application are removed.
+- If the preferred host already exists on the Dokploy application, no new domain is created.
+- The preferred host is derived from the Dokploy server host and the Aspire project/resource names. If that host does not resolve, the integration falls back to an `sslip.io` hostname.
+- Application domains are created with HTTPS enabled.
+
+Example:
+
+```csharp
+var api = builder.AddProject<Projects.ApiService>("api")
+    .WithExternalHttpEndpoints();
+```
+
+Without an external HTTP/HTTPS endpoint, the resource is still deployed, but no public Dokploy domain is created for it.
+
+The project-scoped registry follows a separate rule set:
+
+- A registry domain is created only when the integration has to bootstrap its own Dokploy registry.
+- Auto-registry bootstrap happens only when no default container registry is configured on the Dokploy environment and no application has its own explicit container registry reference.
+- If the registry compose service already has the expected host, the existing domain is reused instead of creating another one.
+- Registry domains use `sslip.io` with Let's Encrypt because the managed registry is exposed through a Dokploy compose service.
 
 ### Explicit Registry
 
@@ -222,7 +249,7 @@ The integration follows the Docker Compose publisher shape from `Aspire.Hosting.
 
 1. **`publish-{name}`** — Generates Docker Compose artifacts (images, env vars, ports, volumes, service dependencies, `.env` file, Aspire Dashboard).
 2. **`prepare-{name}`** — Runs the stock Docker Compose prepare step for `.env` capture and compose preparation.
-3. **`deploy-{name}`** — Deploys to Dokploy via REST API: validates config, finds/creates a project, bootstraps a registry (if needed), provisions native databases, creates/updates applications, pushes images, and triggers deployments.
+3. **`deploy-{name}`** — Deploys to Dokploy via REST API: validates config, finds/creates a project, bootstraps a registry (if needed), provisions native databases, creates/updates applications, synchronizes domains, pushes images, and triggers deployments.
 
 The publish and prepare steps reuse `Aspire.Hosting.Docker` internals. The compose object model (`ComposeFile`, `Service`, `Network`, `Volume`) is also used for Dokploy-managed stacks such as the project registry.
 
@@ -277,7 +304,9 @@ This library targets the Dokploy REST API (tRPC-based). Authentication uses the 
 | `POST /api/compose.update` | Upload compose content |
 | `POST /api/compose.deploy` | Deploy a compose service |
 | `GET /api/domain.byComposeId` | Check compose domain existence |
-| `POST /api/domain.create` | Expose registry via Traefik |
+| `GET /api/domain.byApplicationId` | Read application domains |
+| `POST /api/domain.create` | Create application or registry domains |
+| `POST /api/domain.remove` | Remove managed application domains |
 | `GET /api/registry.all` | List Dokploy registries |
 | `POST /api/registry.create` | Register a container registry |
 | `POST /api/registry.update` | Update registry credentials |
