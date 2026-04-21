@@ -1295,7 +1295,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         DokployAutoRegistry autoRegistry,
         CancellationToken ct)
     {
-        var images = new List<(IResource resource, string localImage, string remoteImage)>();
+        var images = new List<(IResource resource, ContainerCliTool containerCli, string localImage, string remoteImage)>();
         foreach (var resource in computeResources)
         {
             if (resource is DockerComposeAspireDashboardResource)
@@ -1317,8 +1317,8 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 continue;
             }
 
-            var localImage = await ResolveLocalDockerImageAsync(configuredImage, ct).ConfigureAwait(false);
-            images.Add((resource, localImage, BuildProjectRegistryImage(localImage, autoRegistry)));
+            var resolvedImage = await ResolveLocalContainerImageAsync(configuredImage, ct).ConfigureAwait(false);
+            images.Add((resource, resolvedImage.ContainerCli, resolvedImage.Image, BuildProjectRegistryImage(resolvedImage.Image, autoRegistry)));
         }
 
         if (images.Count == 0)
@@ -1332,16 +1332,21 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         {
             try
             {
-                await EnsureDockerRegistryLoginAsync(context.Logger, autoRegistry, ct).ConfigureAwait(false);
-
-                foreach (var (resource, localImage, remoteImage) in images)
+                foreach (var runtimeImages in images.GroupBy(image => image.containerCli.FileName, StringComparer.OrdinalIgnoreCase))
                 {
-                    await RunDockerCommandAsync("image", ["tag", localImage, remoteImage], ct).ConfigureAwait(false);
-                    await RunDockerCommandAsync("image", ["push", remoteImage], ct).ConfigureAwait(false);
-                    context.Logger.LogInformation(
-                        "Pushed image for '{ResourceName}' to '{RemoteImage}'",
-                        resource.Name,
-                        remoteImage);
+                    var containerCli = runtimeImages.First().containerCli;
+                    await EnsureDockerRegistryLoginAsync(context.Logger, autoRegistry, containerCli, ct).ConfigureAwait(false);
+
+                    foreach (var (resource, _, localImage, remoteImage) in runtimeImages)
+                    {
+                        await RunContainerCommandAsync(containerCli.FileName, "image", ["tag", localImage, remoteImage], ct).ConfigureAwait(false);
+                        await RunContainerCommandAsync(containerCli.FileName, "image", ["push", remoteImage], ct).ConfigureAwait(false);
+                        context.Logger.LogInformation(
+                            "Pushed image for '{ResourceName}' to '{RemoteImage}' using {ContainerCli}",
+                            resource.Name,
+                            remoteImage,
+                            containerCli.FileName);
+                    }
                 }
 
                 await pushTask.CompleteAsync(
@@ -1363,6 +1368,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
     private static async Task EnsureDockerRegistryLoginAsync(
         ILogger logger,
         DokployAutoRegistry autoRegistry,
+        ContainerCliTool containerCli,
         CancellationToken ct)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -1374,7 +1380,8 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         {
             while (!timeoutCts.Token.IsCancellationRequested)
             {
-                lastResult = await RunDockerCommandWithResultAsync(
+                lastResult = await RunContainerCommandWithResultAsync(
+                    containerCli.FileName,
                     "login",
                     [autoRegistry.RegistryHost, "--username", autoRegistry.Username, "--password-stdin"],
                     timeoutCts.Token,
@@ -1386,7 +1393,8 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 }
 
                 logger.LogWarning(
-                    "docker login to '{RegistryHost}' failed with exit code {ExitCode}. Retrying in {DelaySeconds}s.",
+                    "{ContainerCli} login to '{RegistryHost}' failed with exit code {ExitCode}. Retrying in {DelaySeconds}s.",
+                    containerCli.FileName,
                     autoRegistry.RegistryHost,
                     lastResult.ExitCode,
                     s_registryProbeInterval.TotalSeconds);
@@ -1399,7 +1407,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         }
 
         throw new InvalidOperationException(
-            $"docker login failed with exit code {lastResult.ExitCode}: {lastResult.StandardError}{Environment.NewLine}{lastResult.StandardOutput}".Trim());
+            $"{containerCli.FileName} login failed with exit code {lastResult.ExitCode}: {lastResult.StandardError}{Environment.NewLine}{lastResult.StandardOutput}".Trim());
     }
 
     private static async Task EnsureWatchtowerComposeAsync(
@@ -1469,21 +1477,23 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         }
     }
 
-    private static async Task RunDockerCommandAsync(
+    private static async Task RunContainerCommandAsync(
+        string containerCli,
         string command,
         IReadOnlyList<string> arguments,
         CancellationToken ct,
         string? standardInput = null)
     {
-        var result = await RunDockerCommandWithResultAsync(command, arguments, ct, standardInput).ConfigureAwait(false);
+        var result = await RunContainerCommandWithResultAsync(containerCli, command, arguments, ct, standardInput).ConfigureAwait(false);
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"docker {command} failed with exit code {result.ExitCode}: {result.StandardError}{Environment.NewLine}{result.StandardOutput}".Trim());
+                $"{containerCli} {command} failed with exit code {result.ExitCode}: {result.StandardError}{Environment.NewLine}{result.StandardOutput}".Trim());
         }
     }
 
-    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunDockerCommandWithResultAsync(
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunContainerCommandWithResultAsync(
+        string containerCli,
         string command,
         IReadOnlyList<string> arguments,
         CancellationToken ct,
@@ -1493,7 +1503,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "docker",
+                FileName = containerCli,
                 UseShellExecute = false,
                 RedirectStandardInput = standardInput is not null,
                 RedirectStandardOutput = true,
@@ -1529,35 +1539,96 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
     }
 
     private static async Task<string> ResolveLocalDockerImageAsync(string configuredImage, CancellationToken ct)
+        => (await ResolveLocalContainerImageAsync(configuredImage, ct).ConfigureAwait(false)).Image;
+
+    private static async Task<ResolvedLocalContainerImage> ResolveLocalContainerImageAsync(string configuredImage, CancellationToken ct)
     {
         var normalizedImage = NormalizeDockerImageReference(configuredImage);
-        if (await DockerImageExistsAsync(normalizedImage, ct).ConfigureAwait(false))
+        var repositoryName = GetImageRepositoryName(normalizedImage);
+        var failures = new List<string>();
+
+        foreach (var containerCli in GetContainerCliCandidates())
         {
-            return normalizedImage;
+            var inspectResult = await TryRunContainerCommandWithResultAsync(
+                containerCli.FileName,
+                "image",
+                ["inspect", normalizedImage],
+                ct).ConfigureAwait(false);
+
+            if (inspectResult is null)
+            {
+                failures.Add($"{containerCli.FileName} is not available.");
+                continue;
+            }
+
+            if (inspectResult.Value.ExitCode == 0)
+            {
+                return new ResolvedLocalContainerImage(containerCli, normalizedImage);
+            }
+
+            var listResult = await RunContainerCommandWithResultAsync(
+                containerCli.FileName,
+                "image",
+                ["ls", repositoryName, "--format", "{{.Repository}}:{{.Tag}}"],
+                ct).ConfigureAwait(false);
+
+            var resolvedImage = listResult.StandardOutput
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(static line => line.Trim())
+                .FirstOrDefault(static line => !line.Contains("<none>", StringComparison.OrdinalIgnoreCase));
+
+            if (!string.IsNullOrWhiteSpace(resolvedImage))
+            {
+                return new ResolvedLocalContainerImage(containerCli, resolvedImage);
+            }
+
+            failures.Add($"{containerCli.FileName} inspect failed: {inspectResult.Value.StandardError}");
         }
 
-        var repositoryName = GetImageRepositoryName(normalizedImage);
-        var result = await RunDockerCommandWithResultAsync(
-            "image",
-            ["ls", repositoryName, "--format", "{{.Repository}}:{{.Tag}}"],
-            ct).ConfigureAwait(false);
-
-        var resolvedImage = result.StandardOutput
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(static line => line.Trim())
-            .FirstOrDefault(static line => !line.Contains("<none>", StringComparison.OrdinalIgnoreCase));
-
-        return string.IsNullOrWhiteSpace(resolvedImage) ? normalizedImage : resolvedImage;
+        throw new InvalidOperationException(
+            $"Could not locate local image '{normalizedImage}' in any supported container CLI. {string.Join(" ", failures)}".Trim());
     }
 
     private static async Task<bool> DockerImageExistsAsync(string image, CancellationToken ct)
     {
-        var result = await RunDockerCommandWithResultAsync(
-            "image",
-            ["inspect", image],
-            ct).ConfigureAwait(false);
+        foreach (var containerCli in GetContainerCliCandidates())
+        {
+            var result = await TryRunContainerCommandWithResultAsync(
+                containerCli.FileName,
+                "image",
+                ["inspect", image],
+                ct).ConfigureAwait(false);
 
-        return result.ExitCode == 0;
+            if (result is { ExitCode: 0 })
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)?> TryRunContainerCommandWithResultAsync(
+        string containerCli,
+        string command,
+        IReadOnlyList<string> arguments,
+        CancellationToken ct,
+        string? standardInput = null)
+    {
+        try
+        {
+            return await RunContainerCommandWithResultAsync(containerCli, command, arguments, ct, standardInput).ConfigureAwait(false);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return null;
+        }
+    }
+
+    private static IEnumerable<ContainerCliTool> GetContainerCliCandidates()
+    {
+        yield return new ContainerCliTool("docker");
+        yield return new ContainerCliTool("podman");
     }
 
     private static string NormalizeDockerImageReference(string image)
@@ -2992,6 +3063,10 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
         string? Image,
         IReadOnlyList<string> Entrypoint,
         IReadOnlyList<string> Command);
+
+    private sealed record ContainerCliTool(string FileName);
+
+    private sealed record ResolvedLocalContainerImage(ContainerCliTool ContainerCli, string Image);
 
     private static async Task<DokployProject> FindOrCreateProjectAsync(
         DokployApiClient client,
