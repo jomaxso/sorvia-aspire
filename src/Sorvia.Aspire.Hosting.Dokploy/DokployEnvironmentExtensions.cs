@@ -162,45 +162,6 @@ public static class DokployEnvironmentExtensions
     }
 
     /// <summary>
-    /// Enables or disables the Aspire Dashboard container for telemetry visualization
-    /// in the deployed Docker Compose environment.
-    /// </summary>
-    /// <param name="builder">The Dokploy environment resource builder.</param>
-    /// <param name="enabled">Whether to enable the dashboard. Default is <c>true</c>.</param>
-    /// <returns>The resource builder for chaining.</returns>
-    /// <remarks>
-    /// <para>
-    /// When enabled, an Aspire Dashboard container (<c>mcr.microsoft.com/dotnet/aspire-dashboard</c>)
-    /// is added to the generated Docker Compose file. All other services are automatically configured
-    /// to send OpenTelemetry (OTLP) telemetry to the dashboard via the <c>OTEL_EXPORTER_OTLP_ENDPOINT</c>
-    /// environment variable.
-    /// </para>
-    /// <para>
-    /// The dashboard is enabled by default, matching the behavior of
-    /// <c>DockerComposeEnvironmentResource.WithDashboard()</c> in <c>Aspire.Hosting.Docker</c>.
-    /// </para>
-    /// </remarks>
-    /// <example>
-    /// <code>
-    /// // Dashboard enabled by default
-    /// builder.AddDokployEnvironment("dokploy");
-    ///
-    /// // Explicitly disable the dashboard
-    /// builder.AddDokployEnvironment("dokploy").WithDashboard(false);
-    /// </code>
-    /// </example>
-    [AspireExport("withDashboard", Description = "Enables or disables the Aspire dashboard for the Dokploy environment")]
-    public static IResourceBuilder<DokployEnvironmentResource> WithDashboard(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        bool enabled = true)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-
-        builder.Resource.DashboardEnabled = enabled;
-        return builder;
-    }
-
-    /// <summary>
     /// Allows setting the properties of a Dokploy environment resource, including inherited Docker Compose settings.
     /// </summary>
     [AspireExportIgnore(Reason = "General-purpose configuration method for Dokploy environment resources. Not intended for direct use in most scenarios.")]
