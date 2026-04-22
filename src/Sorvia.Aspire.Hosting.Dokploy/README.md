@@ -106,7 +106,7 @@ Application domains are managed automatically during publish-mode deploys.
 Example:
 
 ```csharp
-var server = builder.AddCSharpApp("server", "../demo.Server")
+var server = builder.AddCSharpApp("server", "../MyServer")
     .WithExternalHttpEndpoints();
 ```
 
