@@ -10,7 +10,7 @@ title: "[Bug] "
 
 ## Package version
 
-<!-- e.g. 0.1.0 -->
+<!-- e.g. 0.1.3 -->
 
 ## Affected area
 

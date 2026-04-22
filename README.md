@@ -4,9 +4,9 @@ A collection of .NET Aspire hosting integrations by [Sorvia](https://github.com/
 
 ## Packages
 
-| Package | Description | Version |
-|---------|-------------|---------|
-| [Sorvia.Aspire.Hosting.Dokploy](src/Sorvia.Aspire.Hosting.Dokploy/) | Deploy .NET Aspire apps to a self-hosted [Dokploy](https://dokploy.com) instance | 0.1.0 |
+| Package | Description | NuGet |
+|---------|-------------|-------|
+| [Sorvia.Aspire.Hosting.Dokploy](src/Sorvia.Aspire.Hosting.Dokploy/) | Deploy .NET Aspire apps to a self-hosted [Dokploy](https://dokploy.com) instance | [![NuGet](https://img.shields.io/nuget/v/Sorvia.Aspire.Hosting.Dokploy)](https://www.nuget.org/packages/Sorvia.Aspire.Hosting.Dokploy) |
 
 ## Quick Start
 
@@ -32,6 +32,7 @@ When running locally, the Dokploy resource is a no-op — everything runs as usu
 The deploy prompt also asks for the target Dokploy environment and offers `production` as the default; empty input falls back to `production`.
 If you enter the Dokploy host without `http://` or `https://`, the deploy flow assumes `https://`.
 Application domains are created automatically for external HTTP/HTTPS endpoints; you can control that on resources with Aspire methods such as `.WithExternalHttpEndpoints()`. The package README documents the full domain and registry-domain rules.
+See [`src/Sorvia.Aspire.Hosting.Dokploy/README.md`](src/Sorvia.Aspire.Hosting.Dokploy/README.md) for the full package guide and API reference.
 
 ## Repository Structure
 
@@ -39,7 +40,9 @@ Application domains are created automatically for external HTTP/HTTPS endpoints;
 src/
   Sorvia.Aspire.Hosting.Dokploy/   # Dokploy hosting integration package
 demo/
-  Apphost/                          # Sample AppHost showing usage
+  demo.AppHost/                    # Sample Aspire AppHost
+  demo.Server/                     # Sample backend
+  frontend/                        # Sample Vite frontend
 ```
 
 ## Prerequisites
@@ -51,7 +54,8 @@ demo/
 ## Building
 
 ```shell
-dotnet build
+dotnet build src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj -c Release
+dotnet build demo/demo.AppHost/demo.AppHost.csproj -c Release
 ```
 
 ## Packaging
@@ -59,13 +63,13 @@ dotnet build
 Before the first publish, verify the package locally:
 
 ```shell
-dotnet pack -c Release -o ./artifacts src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj
+dotnet pack src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj -c Release -o ./artifacts
 ```
 
 GitHub Actions is split into:
 
-- `ci.yml` for restore, build, pack validation, and package artifact upload
-- `publish.yml` for automatic publishing to nuget.org after a successful `ci.yml` run on `main`, when the package version changed
+- `.github/workflows/ci.yml` for restore, build, pack validation, demo AppHost validation, and package artifact upload
+- `.github/workflows/publish.yml` for automatic publishing to nuget.org after a successful `CI` run on `main`, when the package version changed
 
 ## NuGet Trusted Publishing
 
@@ -91,7 +95,7 @@ Release flow:
 ```shell
 # bump <Version> in the package project
 git add src/Sorvia.Aspire.Hosting.Dokploy/Sorvia.Aspire.Hosting.Dokploy.csproj
-git commit -m "Bump package version to 0.1.0"
+git commit -m "Bump package version to <new-version>"
 git push origin main
 ```
 
