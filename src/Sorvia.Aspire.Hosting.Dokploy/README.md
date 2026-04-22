@@ -21,7 +21,7 @@ dotnet add package Sorvia.Aspire.Hosting.Dokploy
 Or add the package reference directly:
 
 ```xml
-<PackageReference Include="Sorvia.Aspire.Hosting.Dokploy" Version="0.1.0" />
+<PackageReference Include="Sorvia.Aspire.Hosting.Dokploy" Version="0.1.3" />
 ```
 
 ### Basic Usage
@@ -29,16 +29,23 @@ Or add the package reference directly:
 ```csharp
 var builder = DistributedApplication.CreateBuilder(args);
 
-var api = builder.AddProject<Projects.ApiService>("api");
-var frontend = builder.AddNpmApp("portal", "../RoadmapPortal", "dev");
+var server = builder.AddCSharpApp("server", "../demo.Server")
+    .WithExternalHttpEndpoints();
+
+var webfrontend = builder.AddViteApp("webfrontend", "../frontend")
+    .WithReference(server)
+    .WaitFor(server);
+
+server.PublishWithContainerFiles(webfrontend, "wwwroot");
 
 // Deploy everything to Dokploy in publish mode
-builder.AddDokployEnvironment("dokploy");
+builder.AddDokployEnvironment("demo");
 
 builder.Build().Run();
 ```
 
 `AddDokployEnvironment` auto-detects **all resources** in the Aspire application model and handles deployment when the AppHost runs in publish mode (`dotnet run --publisher dokploy`). In run mode the Dokploy environment is not added to the model — everything runs locally as usual.
+The example above mirrors the current demo application in this repository under `demo/demo.AppHost`.
 
 ## Configuration
 
@@ -99,7 +106,7 @@ Application domains are managed automatically during publish-mode deploys.
 Example:
 
 ```csharp
-var api = builder.AddProject<Projects.ApiService>("api")
+var server = builder.AddCSharpApp("server", "../demo.Server")
     .WithExternalHttpEndpoints();
 ```
 
@@ -121,7 +128,7 @@ builder.AddDokployEnvironment("dokploy")
     .WithContainerRegistry(registry);
 
 // Per-resource registry
-builder.AddProject<Projects.ApiService>("api")
+builder.AddCSharpApp("server", "../demo.Server")
     .WithContainerRegistry(registry);
 ```
 
@@ -152,7 +159,7 @@ var mysql = builder.AddDokployMySql("mysql");
 var mariadb = builder.AddDokployMariaDB("mariadb");
 var mongo = builder.AddDokployMongoDB("mongo");
 
-builder.AddProject<Projects.ApiService>("api")
+builder.AddCSharpApp("server", "../demo.Server")
     .WithReference(db)
     .WithReference(redis);
 
@@ -228,15 +235,17 @@ var postgres = builder.AddDokployPostgres("postgres").WithDataVolume();
 var db = postgres.AddDatabase("roadmapdb");
 var redis = builder.AddDokployRedis("redis");
 
-var api = builder.AddProject<Projects.ApiService>("api")
+var server = builder.AddCSharpApp("server", "../demo.Server")
     .WithReference(db)
     .WithReference(redis);
 
-var portal = builder.AddNpmApp("portal", "../RoadmapPortal", "dev")
-    .WithReference(api)
-    .WithHttpEndpoint(env: "PORT");
+var webfrontend = builder.AddViteApp("webfrontend", "../frontend")
+    .WithReference(server)
+    .WaitFor(server);
 
-builder.AddDokployEnvironment("requirement-roadmap")
+server.PublishWithContainerFiles(webfrontend, "wwwroot");
+
+builder.AddDokployEnvironment("demo")
     .WithContainerRegistry(registry)
     .WithDashboard(true);
 
