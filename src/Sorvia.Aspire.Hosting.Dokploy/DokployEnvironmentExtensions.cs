@@ -1,14 +1,10 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
-
-#pragma warning disable ASPIREINTERACTION001 // Custom deploy prompts use Aspire's experimental interaction API
+#pragma warning disable ASPIREINTERACTION001 // This type is used for interaction with the Dokploy REST API and is not intended for direct use by application code. Suppress this diagnostic to proceed.
+#pragma warning disable ASPIREATS001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Docker;
 using Aspire.Hosting.Dokploy;
-using Aspire.Hosting.Dokploy.Annotations;
 using Aspire.Hosting.Lifecycle;
-using Aspire.Hosting.Docker.Resources;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.Reflection;
@@ -51,9 +47,9 @@ namespace Aspire.Hosting;
 ///
 /// <para><b>Configuration:</b></para>
 /// <para>
-    /// The Dokploy server URL, API key, project name, and deployment environment are captured
-    /// as Aspire parameters when <c>aspire deploy</c> needs them. Plain <c>aspire publish</c>
-    /// can still generate Docker Compose artifacts without Dokploy credentials.
+/// The Dokploy server URL, API key, project name, and deployment environment are captured
+/// as Aspire parameters when <c>aspire deploy</c> needs them. Plain <c>aspire publish</c>
+/// can still generate Docker Compose artifacts without Dokploy credentials.
 /// </para>
 /// </remarks>
 public static class DokployEnvironmentExtensions
@@ -71,14 +67,6 @@ public static class DokployEnvironmentExtensions
             "CreateDashboard",
             BindingFlags.Static | BindingFlags.NonPublic)
         ?? throw new InvalidOperationException("Could not find Docker compose dashboard factory method.");
-
-    private static readonly PropertyInfo s_configureComposeFileProperty =
-        typeof(DockerComposeEnvironmentResource).GetProperty("ConfigureComposeFile", BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new InvalidOperationException("Could not find Docker compose file callback property.");
-
-    private static readonly PropertyInfo s_configureEnvFileProperty =
-        typeof(DockerComposeEnvironmentResource).GetProperty("ConfigureEnvFile", BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new InvalidOperationException("Could not find Docker env file callback property.");
 
     private static IDistributedApplicationBuilder AddDokployDockerComposeInfrastructure(this IDistributedApplicationBuilder builder)
     {
@@ -115,6 +103,7 @@ public static class DokployEnvironmentExtensions
     /// builder.Build().Run();
     /// </code>
     /// </example>
+    [AspireExport("addDokployEnvironment", Description = "Adds a Dokploy publishing environment")]
     public static IResourceBuilder<DokployEnvironmentResource> AddDokployEnvironment(
         this IDistributedApplicationBuilder builder,
         string name)
@@ -173,45 +162,6 @@ public static class DokployEnvironmentExtensions
     }
 
     /// <summary>
-    /// Sets the Dokploy server ID for remote server deployments.
-    /// When not set, the deployment targets the default (local) Dokploy server.
-    /// </summary>
-    /// <param name="builder">The Dokploy environment resource builder.</param>
-    /// <param name="serverId">The Dokploy server ID.</param>
-    public static IResourceBuilder<DokployEnvironmentResource> WithServerId(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        string serverId)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
-
-        builder.Resource.ServerId = serverId;
-        return builder;
-    }
-
-    /// <summary>
-    /// Sets the Dokploy server ID from an Aspire parameter resource.
-    /// </summary>
-    /// <param name="builder">The Dokploy environment resource builder.</param>
-    /// <param name="serverId">The parameter resource providing the Dokploy server ID.</param>
-    /// <example>
-    /// <code>
-    /// var serverId = builder.AddParameter("dokploy-server-id");
-    /// builder.AddDokployEnvironment("dokploy").WithServerId(serverId);
-    /// </code>
-    /// </example>
-    public static IResourceBuilder<DokployEnvironmentResource> WithServerId(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        IResourceBuilder<ParameterResource> serverId)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(serverId);
-
-        builder.Resource.ServerIdParameter = serverId.Resource;
-        return builder;
-    }
-
-    /// <summary>
     /// Enables or disables the Aspire Dashboard container for telemetry visualization
     /// in the deployed Docker Compose environment.
     /// </summary>
@@ -239,6 +189,7 @@ public static class DokployEnvironmentExtensions
     /// builder.AddDokployEnvironment("dokploy").WithDashboard(false);
     /// </code>
     /// </example>
+    [AspireExport("withDashboard", Description = "Enables or disables the Aspire dashboard for the Dokploy environment")]
     public static IResourceBuilder<DokployEnvironmentResource> WithDashboard(
         this IResourceBuilder<DokployEnvironmentResource> builder,
         bool enabled = true)
@@ -250,26 +201,9 @@ public static class DokployEnvironmentExtensions
     }
 
     /// <summary>
-    /// Configures the dashboard properties for this Dokploy environment.
-    /// </summary>
-    public static IResourceBuilder<DokployEnvironmentResource> WithDashboard(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        Action<IResourceBuilder<DockerComposeAspireDashboardResource>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        builder.Resource.DashboardEnabled = true;
-
-        configure((IResourceBuilder<DockerComposeAspireDashboardResource>)(s_dashboardProperty.GetValue(builder.Resource)
-            ?? throw new InvalidOperationException("Dashboard resource is not initialized.")));
-
-        return builder;
-    }
-
-    /// <summary>
     /// Allows setting the properties of a Dokploy environment resource, including inherited Docker Compose settings.
     /// </summary>
+    [AspireExportIgnore(Reason = "General-purpose configuration method for Dokploy environment resources. Not intended for direct use in most scenarios.")]
     public static IResourceBuilder<DokployEnvironmentResource> WithProperties(
         this IResourceBuilder<DokployEnvironmentResource> builder,
         Action<DokployEnvironmentResource> configure)
@@ -278,36 +212,6 @@ public static class DokployEnvironmentExtensions
         ArgumentNullException.ThrowIfNull(configure);
 
         configure(builder.Resource);
-        return builder;
-    }
-
-    /// <summary>
-    /// Configures the generated Docker Compose file before it is written during publish.
-    /// </summary>
-    public static IResourceBuilder<DokployEnvironmentResource> ConfigureComposeFile(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        Action<ComposeFile> configure)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        var current = (Action<ComposeFile>?)s_configureComposeFileProperty.GetValue(builder.Resource);
-        s_configureComposeFileProperty.SetValue(builder.Resource, current + configure);
-        return builder;
-    }
-
-    /// <summary>
-    /// Configures the captured environment variables before Dokploy prepares the generated .env file.
-    /// </summary>
-    public static IResourceBuilder<DokployEnvironmentResource> ConfigureEnvFile(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        Action<IDictionary<string, CapturedEnvironmentVariable>> configure)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        var current = (Action<IDictionary<string, CapturedEnvironmentVariable>>?)s_configureEnvFileProperty.GetValue(builder.Resource);
-        s_configureEnvFileProperty.SetValue(builder.Resource, current + configure);
         return builder;
     }
 
@@ -341,6 +245,7 @@ public static class DokployEnvironmentExtensions
     ///     .WithContainerRegistry(registry);
     /// </code>
     /// </example>
+    [AspireExport("withContainerRegistry", Description = "Configures the Dokploy environment to use a default container registry")]
     public static IResourceBuilder<DokployEnvironmentResource> WithContainerRegistry<TContainerRegistry>(
         this IResourceBuilder<DokployEnvironmentResource> builder,
         IResourceBuilder<TContainerRegistry> registry)

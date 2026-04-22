@@ -1,7 +1,4 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
-
-#pragma warning disable ASPIREPIPELINES001 // Pipeline steps are experimental
+#pragma warning disable ASPIREPIPELINES001 // This resource defines its own custom pipeline steps and is not compatible with the stock Docker Compose pipeline. Suppress this diagnostic to proceed.
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Docker;
@@ -1966,29 +1963,29 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                     return s;
 
                 case EndpointReference ep:
-                {
-                    var hostname = hostnames.GetValueOrDefault(ep.Resource) ?? ep.Resource.Name.ToLowerInvariant();
-                    var port = GetEndpointPort(ep.Resource, ep.EndpointName, endpointPorts);
-                    return $"{ep.Scheme}://{hostname}:{port}";
-                }
+                    {
+                        var hostname = hostnames.GetValueOrDefault(ep.Resource) ?? ep.Resource.Name.ToLowerInvariant();
+                        var port = GetEndpointPort(ep.Resource, ep.EndpointName, endpointPorts);
+                        return $"{ep.Scheme}://{hostname}:{port}";
+                    }
 
                 case EndpointReferenceExpression epExpr:
-                {
-                    var hostname = hostnames.GetValueOrDefault(epExpr.Endpoint.Resource)
-                                   ?? epExpr.Endpoint.Resource.Name.ToLowerInvariant();
-                    var port = GetEndpointPort(epExpr.Endpoint.Resource, epExpr.Endpoint.EndpointName, endpointPorts);
-                    var scheme = epExpr.Endpoint.Scheme;
-
-                    return epExpr.Property switch
                     {
-                        EndpointProperty.Url => $"{scheme}://{hostname}:{port}",
-                        EndpointProperty.Host or EndpointProperty.IPV4Host => hostname,
-                        EndpointProperty.Port or EndpointProperty.TargetPort => port.ToString(),
-                        EndpointProperty.HostAndPort => $"{hostname}:{port}",
-                        EndpointProperty.Scheme => scheme,
-                        _ => $"{scheme}://{hostname}:{port}"
-                    };
-                }
+                        var hostname = hostnames.GetValueOrDefault(epExpr.Endpoint.Resource)
+                                       ?? epExpr.Endpoint.Resource.Name.ToLowerInvariant();
+                        var port = GetEndpointPort(epExpr.Endpoint.Resource, epExpr.Endpoint.EndpointName, endpointPorts);
+                        var scheme = epExpr.Endpoint.Scheme;
+
+                        return epExpr.Property switch
+                        {
+                            EndpointProperty.Url => $"{scheme}://{hostname}:{port}",
+                            EndpointProperty.Host or EndpointProperty.IPV4Host => hostname,
+                            EndpointProperty.Port or EndpointProperty.TargetPort => port.ToString(),
+                            EndpointProperty.HostAndPort => $"{hostname}:{port}",
+                            EndpointProperty.Scheme => scheme,
+                            _ => $"{scheme}://{hostname}:{port}"
+                        };
+                    }
 
                 case ConnectionStringReference cs:
                     value = cs.Resource.ConnectionStringExpression;
@@ -1999,36 +1996,36 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                     continue;
 
                 case ParameterResource param:
-                {
-                    // Parameter values can be resolved directly — they don't depend on other resources
-                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    cts.CancelAfter(TimeSpan.FromSeconds(5));
-                    return await param.GetValueAsync(cts.Token).ConfigureAwait(false);
-                }
+                    {
+                        // Parameter values can be resolved directly — they don't depend on other resources
+                        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        cts.CancelAfter(TimeSpan.FromSeconds(5));
+                        return await param.GetValueAsync(cts.Token).ConfigureAwait(false);
+                    }
 
                 case ReferenceExpression expr:
-                {
-                    if (expr is { Format: "{0}", ValueProviders.Count: 1 })
                     {
-                        return await ResolveValueAsync(expr.ValueProviders[0], hostnames, endpointPorts, ct).ConfigureAwait(false);
-                    }
+                        if (expr is { Format: "{0}", ValueProviders.Count: 1 })
+                        {
+                            return await ResolveValueAsync(expr.ValueProviders[0], hostnames, endpointPorts, ct).ConfigureAwait(false);
+                        }
 
-                    var args = new object[expr.ValueProviders.Count];
-                    for (var i = 0; i < expr.ValueProviders.Count; i++)
-                    {
-                        var val = await ResolveValueAsync(expr.ValueProviders[i], hostnames, endpointPorts, ct).ConfigureAwait(false);
-                        args[i] = val ?? throw new InvalidOperationException($"Value provider at index {i} resolved to null");
+                        var args = new object[expr.ValueProviders.Count];
+                        for (var i = 0; i < expr.ValueProviders.Count; i++)
+                        {
+                            var val = await ResolveValueAsync(expr.ValueProviders[i], hostnames, endpointPorts, ct).ConfigureAwait(false);
+                            args[i] = val ?? throw new InvalidOperationException($"Value provider at index {i} resolved to null");
+                        }
+                        return string.Format(CultureInfo.InvariantCulture, expr.Format, args);
                     }
-                    return string.Format(CultureInfo.InvariantCulture, expr.Format, args);
-                }
 
                 case IValueProvider provider:
-                {
-                    // Fallback: try GetValueAsync with timeout
-                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    cts.CancelAfter(TimeSpan.FromSeconds(5));
-                    return await provider.GetValueAsync(cts.Token).ConfigureAwait(false);
-                }
+                    {
+                        // Fallback: try GetValueAsync with timeout
+                        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        cts.CancelAfter(TimeSpan.FromSeconds(5));
+                        return await provider.GetValueAsync(cts.Token).ConfigureAwait(false);
+                    }
 
                 case not null:
                     return value.ToString();
