@@ -8,7 +8,7 @@
     <IsPackable>true</IsPackable>
     <RootNamespace>Aspire.Hosting.Dokploy</RootNamespace>
     <PackageId>Sorvia.Aspire.Hosting.Dokploy</PackageId>
-    <Version>0.1.2</Version>
+    <Version>0.1.3</Version>
     <Authors>jomaxso</Authors>
     <PackageProjectUrl>https://github.com/jomaxso/sorvia-aspire</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -20,11 +20,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.Docker" Version="13.2.2" />
-    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.2.2" />
-    <PackageReference Include="Aspire.Hosting.Redis" Version="13.2.2" />
-    <PackageReference Include="Aspire.Hosting.MySql" Version="13.2.2" />
-    <PackageReference Include="Aspire.Hosting.MongoDB" Version="13.2.2" />
+    <PackageReference Include="Aspire.Hosting" Version="13.2.3" />
+    <PackageReference Include="Aspire.Hosting.Docker" Version="13.2.3" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.2.3" />
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.2.3" />
+    <PackageReference Include="Aspire.Hosting.MySql" Version="13.2.3" />
+    <PackageReference Include="Aspire.Hosting.MongoDB" Version="13.2.3" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
   </ItemGroup>
 
