@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.2.2">
+<Project Sdk="Aspire.AppHost.Sdk/13.2.3">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.2.2" />
+    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.2.3" />
     <ProjectReference Include="..\..\src\Sorvia.Aspire.Hosting.Dokploy\Sorvia.Aspire.Hosting.Dokploy.csproj" IsAspireProjectResource="false" />
   </ItemGroup>
 </Project>
