@@ -14,6 +14,31 @@ public class DokployEnvironmentResource : Resource, IComputeEnvironmentResource
 
     public bool DashboardEnabled { get; set; } = true;
 
+    /// <summary>
+    /// The parameter resource providing the Dokploy server URL.
+    /// When set, takes precedence over the <see cref="ServerUrl"/> string value.
+    /// </summary>
+    public ParameterResource? ServerUrlParameter { get; set; }
+
+    /// <summary>
+    /// The parameter resource providing the Dokploy API key.
+    /// When set, takes precedence over the <see cref="ApiKey"/> string value.
+    /// </summary>
+    public ParameterResource? ApiKeyParameter { get; set; }
+
+    /// <summary>
+    /// The parameter resource providing the Dokploy project name.
+    /// When set, it determines which Dokploy project receives the deployment.
+    /// </summary>
+    public ParameterResource? ProjectNameParameter { get; set; }
+
+    /// <summary>
+    /// The parameter resource providing the Dokploy environment name.
+    /// When set, takes precedence over the <see cref="DeploymentEnvironmentName"/> string value.
+    /// </summary>
+    public ParameterResource? DeploymentEnvironmentNameParameter { get; set; }
+
+
     public IResourceBuilder<DokployAspireDashboardResource>? Dashboard { get; set; }
 
     public DokployEnvironmentResource(string name) : base(name)
@@ -27,12 +52,12 @@ public class DokployEnvironmentResource : Resource, IComputeEnvironmentResource
                 Name = $"dokploy-deploy-{Name}",
                 Description = $"Deploy resources for environment {Name} using Dokploy",
                 Tags = [DokployTag, DokployDeployTag],
-                Action = ctx => DokployDeploymentExecutor.DeployToDokployAsync(ctx, this),
+                Action = ctx => Task.CompletedTask, // DokployDeploymentExecutor.DeployToDokployAsync(ctx, this),
                 DependsOnSteps = [WellKnownPipelineSteps.ProcessParameters],
                 RequiredBySteps = [WellKnownPipelineSteps.Deploy],
             };
 
-            return staps;
+            return [.. staps, dokployDeployStep];
         }));
 
         // Add pipeline configuration annotation to wire up dependencies

@@ -54,6 +54,14 @@ namespace Aspire.Hosting;
 /// </remarks>
 public static class DokployEnvironmentExtensions
 {
+    internal static IDistributedApplicationBuilder AddDokployInfrastructureCore(this IDistributedApplicationBuilder builder)
+    {
+        // builder.Services.TryAddEventingSubscriber<DockerComposeInfrastructure>();
+        // builder.Services.TryAddEventingSubscriber<DokployInfrastructure>();
+
+        return builder;
+    }
+
     /// <summary>
     /// Adds a Dokploy deployment environment to the Aspire application model.
     /// When the AppHost is published, all resources are automatically deployed
@@ -87,35 +95,31 @@ public static class DokployEnvironmentExtensions
         string name)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrEmpty(name);
 
-        // Check if a Dokploy environment already exists (only one allowed)
-        if (builder.Resources.OfType<DokployEnvironmentResource>().SingleOrDefault() is { } existingResource)
-        {
-            return builder.CreateResourceBuilder(existingResource);
-        }
+        builder.AddDokployInfrastructureCore();
 
         var resource = new DokployEnvironmentResource(name)
         {
-            // DeploymentEnvironmentName = "production",
+            // Initialize the dashboard resource
             Dashboard = builder.CreateAspireDashboard($"{name}-dashboard")
                 .PublishAsDockerComposeService((_, service) =>
                 {
                     service.Restart = "always";
-
-                });
+                })
         };
 
         if (builder.ExecutionContext.IsRunMode)
         {
-            // In run mode, the Dokploy environment is not needed —
-            // return a builder that isn't added to the application model
+            // Return a builder that isn't added to the top-level application builder
+            // so it doesn't surface as a resource.
             return builder.CreateResourceBuilder(resource);
         }
 
-
         resource.ServerUrlParameter = builder.AddParameter("dokploy-url").Resource;
+
         resource.ApiKeyParameter = builder.AddParameter("dokploy-api-key", secret: true).Resource;
+
         resource.ProjectNameParameter = builder.AddParameter("dokploy-project-name")
             .WithDescription("Target Dokploy project name.")
             .WithCustomInput(parameter => new()
@@ -129,6 +133,7 @@ public static class DokployEnvironmentExtensions
                 Required = true
             })
             .Resource;
+
         resource.DeploymentEnvironmentNameParameter = builder.AddParameter("dokploy-environment")
             .WithDescription("Target Dokploy environment inside the project. Leave empty to use production.")
             .WithCustomInput(parameter => new()
@@ -143,11 +148,7 @@ public static class DokployEnvironmentExtensions
             })
             .Resource;
 
-        // In publish mode, add the resource to the application model
-        // but exclude it from the manifest (it's not a traditional publishable resource).
-        // Pipeline steps are registered via PipelineStepAnnotation in the constructor.
-        return builder.AddResource(resource)
-            .ExcludeFromManifest();
+        return builder.AddResource(resource);
     }
 
     internal static IResourceBuilder<DokployAspireDashboardResource> CreateAspireDashboard(
