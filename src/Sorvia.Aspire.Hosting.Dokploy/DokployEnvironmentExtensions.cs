@@ -54,18 +54,6 @@ namespace Aspire.Hosting;
 /// </remarks>
 public static class DokployEnvironmentExtensions
 {
-    private static readonly Type s_dockerComposeInfrastructureType =
-        typeof(DockerComposeEnvironmentResource).Assembly.GetType("Aspire.Hosting.Docker.DockerComposeInfrastructure")
-        ?? throw new InvalidOperationException("Could not find Docker compose infrastructure type.");
-
-
-    private static IDistributedApplicationBuilder AddDokployDockerComposeInfrastructure(this IDistributedApplicationBuilder builder)
-    {
-        builder.Services.TryAddEnumerable(
-            ServiceDescriptor.Singleton(typeof(IDistributedApplicationEventingSubscriber), s_dockerComposeInfrastructureType));
-        return builder;
-    }
-
     /// <summary>
     /// Adds a Dokploy deployment environment to the Aspire application model.
     /// When the AppHost is published, all resources are automatically deployed
@@ -101,29 +89,22 @@ public static class DokployEnvironmentExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
-        builder.AddDokployDockerComposeInfrastructure();
-
         // Check if a Dokploy environment already exists (only one allowed)
         if (builder.Resources.OfType<DokployEnvironmentResource>().SingleOrDefault() is { } existingResource)
         {
             return builder.CreateResourceBuilder(existingResource);
         }
 
-        var aspireDashboard = builder.CreateAspireDashboard($"{name}-dashboard")
-            .PublishAsDockerComposeService((_, service) =>
-            {
-                service.Restart = "always";
-
-            });
-
         var resource = new DokployEnvironmentResource(name)
         {
-            DeploymentEnvironmentName = "production",
-            Dashboard = aspireDashboard
-        };
+            // DeploymentEnvironmentName = "production",
+            Dashboard = builder.CreateAspireDashboard($"{name}-dashboard")
+                .PublishAsDockerComposeService((_, service) =>
+                {
+                    service.Restart = "always";
 
-        // Set the dashboard on the Docker Compose environment resource using the non-public property accessor.
-        SetDashboard(resource, aspireDashboard);
+                });
+        };
 
         if (builder.ExecutionContext.IsRunMode)
         {
@@ -169,79 +150,14 @@ public static class DokployEnvironmentExtensions
             .ExcludeFromManifest();
     }
 
-    /// <summary>
-    /// Allows setting the properties of a Dokploy environment resource, including inherited Docker Compose settings.
-    /// </summary>
-    [AspireExportIgnore(Reason = "General-purpose configuration method for Dokploy environment resources. Not intended for direct use in most scenarios.")]
-    public static IResourceBuilder<DokployEnvironmentResource> WithProperties(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        Action<DokployEnvironmentResource> configure)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        configure(builder.Resource);
-        return builder;
-    }
-
-    /// <summary>
-    /// Configures the Dokploy environment to use the specified container registry as the default
-    /// for all resources that don't have an explicit <c>WithContainerRegistry</c> call.
-    /// </summary>
-    /// <param name="builder">The Dokploy environment resource builder.</param>
-    /// <param name="registry">The container registry resource builder.</param>
-    /// <returns>The resource builder for chaining.</returns>
-    /// <remarks>
-    /// <para>
-    /// When deploying to Dokploy, container images built from <c>ProjectResource</c> instances need to be
-    /// pushed to a container registry so that the Dokploy server can pull them. Use this method to
-    /// set a default registry for all project resources.
-    /// </para>
-    /// <para>
-    /// To set a registry on individual resources instead, use the standard Aspire
-    /// <c>WithContainerRegistry</c> extension method on each resource:
-    /// </para>
-    /// <code>
-    /// var registry = builder.AddContainerRegistry("docker-hub", "docker.io", "myusername");
-    /// builder.AddProject&lt;MyProject&gt;("myproject").WithContainerRegistry(registry);
-    /// </code>
-    /// </remarks>
-    /// <example>
-    /// <code>
-    /// var registry = builder.AddContainerRegistry("ghcr", "ghcr.io", "myorg");
-    ///
-    /// builder.AddDokployEnvironment("dokploy")
-    ///     .WithContainerRegistry(registry);
-    /// </code>
-    /// </example>
-    [AspireExport("withContainerRegistry", Description = "Configures the Dokploy environment to use a default container registry")]
-    public static IResourceBuilder<DokployEnvironmentResource> WithContainerRegistry<TContainerRegistry>(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        IResourceBuilder<TContainerRegistry> registry)
-        where TContainerRegistry : IResource, IContainerRegistry
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(registry);
-
-        builder.Resource.DefaultContainerRegistry = registry.Resource;
-        var existingAnnotation = builder.Resource.Annotations.OfType<ContainerRegistryReferenceAnnotation>().FirstOrDefault();
-        if (existingAnnotation is not null)
-        {
-            builder.Resource.Annotations.Remove(existingAnnotation);
-        }
-
-        builder.Resource.Annotations.Add(new ContainerRegistryReferenceAnnotation(registry.Resource));
-        return builder;
-    }
-
-    internal static IResourceBuilder<DockerComposeAspireDashboardResource> CreateAspireDashboard(
+    internal static IResourceBuilder<DokployAspireDashboardResource> CreateAspireDashboard(
         this IDistributedApplicationBuilder builder,
         string name)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrEmpty(name);
 
-        var resource = new DockerComposeAspireDashboardResource(name);
+        var resource = new DokployAspireDashboardResource(name);
 
         // Initialize the dashboard resource
         return builder.CreateResourceBuilder(resource)
@@ -253,7 +169,4 @@ public static class DokployEnvironmentExtensions
                       .WithHttpEndpoint(name: "otlp-grpc", targetPort: 18889)
                       .WithHttpEndpoint(name: "otlp-http", targetPort: 18890);
     }
-
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "set_Dashboard")]
-    private static extern void SetDashboard(DockerComposeEnvironmentResource environment, IResourceBuilder<DockerComposeAspireDashboardResource> dashboard);
 }

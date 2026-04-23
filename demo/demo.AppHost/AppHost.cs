@@ -4,6 +4,9 @@ var builder = DistributedApplication.CreateBuilder(args);
 
 builder.AddDokployEnvironment("demo");
 
+builder.AddDockerComposeEnvironment("docker-compose-demo")
+    .WithContainerRegistry("mcr.microsoft.com");
+
 var server = builder.AddCSharpApp("server", "../demo.Server")
     .WithHttpHealthCheck("/health")
     .WithExternalHttpEndpoints();

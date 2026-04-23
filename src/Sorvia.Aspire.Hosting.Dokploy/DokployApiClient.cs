@@ -209,6 +209,16 @@ internal sealed class DokployApiClient : IDisposable
         return await response.Content.ReadFromJsonAsync<DokployProject[]>(s_jsonOptions, ct) ?? [];
     }
 
+    /// <summary>
+    /// Gets the currently active Dokploy organization for the authenticated API key.
+    /// GET /organization.active
+    /// </summary>
+    public async Task<DokployOrganization?> GetActiveOrganizationAsync(CancellationToken ct = default)
+    {
+        using var response = await GetJsonAsync("organization.active", ct).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<DokployOrganization>(s_jsonOptions, ct).ConfigureAwait(false);
+    }
+
     // ── Compose endpoints ──────────────────────────────────────────────
 
     /// <summary>
@@ -216,9 +226,9 @@ internal sealed class DokployApiClient : IDisposable
     /// POST /compose.create { name, environmentId, description?, serverId? }
     /// </summary>
     public async Task<DokployCompose> CreateComposeAsync(
-        string name, string environmentId, string? description = null, string? serverId = null, CancellationToken ct = default)
+        string name, string environmentId, string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, environmentId, description, serverId };
+        var payload = new { name, environmentId, description };
         using var response = await PostJsonAsync("compose.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployCompose>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null compose service.");
@@ -286,9 +296,9 @@ internal sealed class DokployApiClient : IDisposable
     /// POST /application.create { name, environmentId, description?, serverId? }
     /// </summary>
     public async Task<DokployApplication> CreateApplicationAsync(
-        string name, string environmentId, string? appName = null, string? description = null, string? serverId = null, CancellationToken ct = default)
+        string name, string environmentId, string? appName = null, string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, environmentId, description, serverId };
+        var payload = new { name, appName, environmentId, description };
         using var response = await PostJsonAsync("application.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployApplication>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null application.");
@@ -363,9 +373,9 @@ internal sealed class DokployApiClient : IDisposable
     public async Task<DokployPostgres> CreatePostgresAsync(
         string name, string environmentId, string? appName = null, string? databaseName = null, string? databaseUser = null,
         string? databasePassword = null, string? dockerImage = null, string? description = null,
-        string? serverId = null, CancellationToken ct = default)
+         CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseName, databaseUser, databasePassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseName, databaseUser, databasePassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("postgres.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployPostgres>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null postgres instance.");
@@ -417,9 +427,9 @@ internal sealed class DokployApiClient : IDisposable
     /// </summary>
     public async Task<DokployRedis> CreateRedisAsync(
         string name, string environmentId, string? appName = null, string? databasePassword = null, string? dockerImage = null,
-        string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databasePassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databasePassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("redis.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployRedis>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null redis instance.");
@@ -455,9 +465,9 @@ internal sealed class DokployApiClient : IDisposable
     public async Task<DokployMySql> CreateMySqlAsync(
         string name, string environmentId, string? appName = null, string? databaseName = null, string? databaseUser = null,
         string? databasePassword = null, string? databaseRootPassword = null, string? dockerImage = null,
-        string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("mysql.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployMySql>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null mysql instance.");
@@ -493,9 +503,9 @@ internal sealed class DokployApiClient : IDisposable
     public async Task<DokployMariaDB> CreateMariaDBAsync(
         string name, string environmentId, string? appName = null, string? databaseName = null, string? databaseUser = null,
         string? databasePassword = null, string? databaseRootPassword = null, string? dockerImage = null,
-        string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("mariadb.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployMariaDB>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null mariadb instance.");
@@ -530,9 +540,9 @@ internal sealed class DokployApiClient : IDisposable
     /// </summary>
     public async Task<DokployMongo> CreateMongoAsync(
         string name, string environmentId, string? appName = null, string? databaseUser = null, string? databasePassword = null,
-        string? dockerImage = null, string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? dockerImage = null, string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseUser, databasePassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseUser, databasePassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("mongo.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployMongo>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null mongo instance.");
@@ -587,9 +597,9 @@ internal sealed class DokployApiClient : IDisposable
     /// </summary>
     public async Task<DokployRegistry> CreateRegistryAsync(
         string registryName, string username, string password, string registryUrl,
-        string? imagePrefix = null, string? serverId = null, CancellationToken ct = default)
+        string? imagePrefix = null,  CancellationToken ct = default)
     {
-        var payload = new { registryName, username, password, registryUrl, registryType = "cloud", imagePrefix, serverId };
+        var payload = new { registryName, username, password, registryUrl, registryType = "cloud", imagePrefix };
         using var response = await PostJsonAsync("registry.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployRegistry>(s_jsonOptions, ct).ConfigureAwait(false)
             ?? new DokployRegistry
@@ -621,7 +631,7 @@ internal sealed class DokployApiClient : IDisposable
         string password,
         string registryUrl,
         string? imagePrefix = null,
-        string? serverId = null,
+        
         CancellationToken ct = default)
     {
         var payload = new
@@ -632,8 +642,7 @@ internal sealed class DokployApiClient : IDisposable
             password,
             registryUrl,
             registryType = "cloud",
-            imagePrefix,
-            serverId
+            imagePrefix
         };
 
         using var _ = await PostJsonAsync("registry.update", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
@@ -835,11 +844,24 @@ internal sealed record DokployProject
     [JsonPropertyName("projectId")]
     public string ProjectId { get; init; } = "";
 
+    [JsonPropertyName("organizationId")]
+    public string? OrganizationId { get; init; }
+
     [JsonPropertyName("name")]
     public string Name { get; init; } = "";
 
     [JsonPropertyName("environments")]
     public DokployProjectEnvironment[]? Environments { get; init; }
+}
+
+/// <summary>The active Dokploy organization for the authenticated API key.</summary>
+internal sealed record DokployOrganization
+{
+    [JsonPropertyName("organizationId")]
+    public string OrganizationId { get; init; } = "";
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
 }
 
 /// <summary>

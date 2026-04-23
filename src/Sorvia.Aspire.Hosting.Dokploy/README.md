@@ -62,6 +62,8 @@ When `aspire deploy` runs, Aspire prompts for those values and stores them in de
 
 The name passed to `AddDokployEnvironment(...)` is the Aspire resource name. The actual Dokploy project name comes from the `dokploy-project-name` parameter. The Dokploy environment inside that project comes from the `dokploy-environment` parameter and defaults to `production`.
 
+When the API key can access multiple Dokploy organizations, deployments target the **active organization** selected in Dokploy. The deployment summary includes that organization, and project lookup is scoped to it so same-named projects in other organizations are not reused accidentally.
+
 ### Optional Settings
 
 ```csharp
@@ -94,6 +96,8 @@ Container images built from `ProjectResource` instances need a registry so the D
 **Without explicit configuration**, the integration bootstraps a **project-scoped private registry on Dokploy** automatically — creating a `registry:2` compose stack, configuring an `sslip.io` domain with Let's Encrypt, registering it in Dokploy, and pushing the built images.
 
 Images that already point at a pullable registry (for example Docker Hub, MCR, GHCR, or other public/private registries) continue to use that registry directly. Only images available locally are mirrored into the auto-bootstrapped project registry.
+
+On the first deploy, the auto-bootstrapped registry may need a few minutes before the `sslip.io` host, Traefik route, and Let's Encrypt certificate are all ready for authenticated pushes.
 
 ## Domain Management
 
