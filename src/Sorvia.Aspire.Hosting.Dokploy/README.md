@@ -93,6 +93,8 @@ Container images built from `ProjectResource` instances need a registry so the D
 
 **Without explicit configuration**, the integration bootstraps a **project-scoped private registry on Dokploy** automatically — creating a `registry:2` compose stack, configuring an `sslip.io` domain with Let's Encrypt, registering it in Dokploy, and pushing the built images.
 
+Images that already point at a pullable registry (for example Docker Hub, MCR, GHCR, or other public/private registries) continue to use that registry directly. Only images available locally are mirrored into the auto-bootstrapped project registry.
+
 ## Domain Management
 
 Application domains are managed automatically during publish-mode deploys.
@@ -198,9 +200,9 @@ var postgres = builder.AddDokployPostgres("postgres")
 |------------|----------------------|----------|
 | PostgreSQL | `UserNameParameter`, `PasswordParameter`, Docker image | User: `postgres`, password: auto-generated |
 | Redis      | `PasswordParameter`, Docker image | No default password |
-| MySQL      | `PasswordParameter`, Docker image | Password: auto-generated |
-| MariaDB    | `PasswordParameter`, Docker image | Password: auto-generated |
-| MongoDB    | `UserNameParameter`, `PasswordParameter`, Docker image | No default credentials |
+| MySQL      | `PasswordParameter`, Docker image | User: resource name, password: auto-generated |
+| MariaDB    | `PasswordParameter`, Docker image | User: resource name, password: auto-generated |
+| MongoDB    | `UserNameParameter`, `PasswordParameter`, Docker image | User: resource name, password: auto-generated |
 
 ### Lifecycle Methods
 

@@ -863,11 +863,15 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
 
         if (autoRegistry is not null)
         {
-            if (resource is DockerComposeAspireDashboardResource
-                && !string.IsNullOrWhiteSpace(publishedImage)
+            if (!string.IsNullOrWhiteSpace(publishedImage)
                 && !ContainsComposeVariable(publishedImage))
             {
-                return publishedImage;
+                var mirroredImage = await TryResolveProjectRegistryImageAsync(
+                    localImageHint ?? publishedImage,
+                    autoRegistry,
+                    ct).ConfigureAwait(false);
+
+                return mirroredImage ?? publishedImage;
             }
 
             var localImage = await ResolveLocalDockerImageAsync(
@@ -904,6 +908,15 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
 
     private static bool ContainsComposeVariable(string image)
         => image.Contains("${", StringComparison.Ordinal);
+
+    private static async Task<string?> TryResolveProjectRegistryImageAsync(
+        string configuredImage,
+        DokployAutoRegistry autoRegistry,
+        CancellationToken ct)
+    {
+        var resolvedImage = await TryResolveLocalContainerImageAsync(configuredImage, ct).ConfigureAwait(false);
+        return resolvedImage is null ? null : BuildProjectRegistryImage(resolvedImage.Image, autoRegistry);
+    }
 
     private static async Task SyncApplicationDomainsAsync(
         DokployApiClient client,
@@ -1315,9 +1328,11 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 continue;
             }
 
+            string? publishedImage = null;
             string? localImageHint = null;
             if (TryGetPublishedComposeService(resource, out var publishedService))
             {
+                publishedImage = publishedService.Image;
                 localImageHint = string.IsNullOrWhiteSpace(publishedService.Image) || ContainsComposeVariable(publishedService.Image)
                     ? publishedService.ServiceName
                     : publishedService.Image;
@@ -1329,7 +1344,20 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 continue;
             }
 
-            var resolvedImage = await ResolveLocalContainerImageAsync(configuredImage, ct).ConfigureAwait(false);
+            ResolvedLocalContainerImage? resolvedImage;
+            if (!string.IsNullOrWhiteSpace(publishedImage) && !ContainsComposeVariable(publishedImage))
+            {
+                resolvedImage = await TryResolveLocalContainerImageAsync(configuredImage, ct).ConfigureAwait(false);
+                if (resolvedImage is null)
+                {
+                    continue;
+                }
+            }
+            else
+            {
+                resolvedImage = await ResolveLocalContainerImageAsync(configuredImage, ct).ConfigureAwait(false);
+            }
+
             images.Add((resource, resolvedImage.ContainerCli, resolvedImage.Image, BuildProjectRegistryImage(resolvedImage.Image, autoRegistry)));
         }
 
@@ -1488,9 +1516,25 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
 
     private static async Task<ResolvedLocalContainerImage> ResolveLocalContainerImageAsync(string configuredImage, CancellationToken ct)
     {
+        var failures = new List<string>();
+        var resolvedImage = await TryResolveLocalContainerImageAsync(configuredImage, ct, failures).ConfigureAwait(false);
+        if (resolvedImage is not null)
+        {
+            return resolvedImage;
+        }
+
+        var normalizedImage = NormalizeDockerImageReference(configuredImage);
+        throw new InvalidOperationException(
+            $"Could not locate local image '{normalizedImage}' in any supported container CLI. {string.Join(" ", failures)}".Trim());
+    }
+
+    private static async Task<ResolvedLocalContainerImage?> TryResolveLocalContainerImageAsync(
+        string configuredImage,
+        CancellationToken ct,
+        List<string>? failures = null)
+    {
         var normalizedImage = NormalizeDockerImageReference(configuredImage);
         var repositoryName = GetImageRepositoryName(normalizedImage);
-        var failures = new List<string>();
 
         foreach (var containerCli in GetContainerCliCandidates())
         {
@@ -1502,7 +1546,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
 
             if (inspectResult is null)
             {
-                failures.Add($"{containerCli.FileName} is not available.");
+                failures?.Add($"{containerCli.FileName} is not available.");
                 continue;
             }
 
@@ -1527,11 +1571,10 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 return new ResolvedLocalContainerImage(containerCli, resolvedImage);
             }
 
-            failures.Add($"{containerCli.FileName} inspect failed: {inspectResult.Value.StandardError}");
+            failures?.Add($"{containerCli.FileName} inspect failed: {inspectResult.Value.StandardError}");
         }
 
-        throw new InvalidOperationException(
-            $"Could not locate local image '{normalizedImage}' in any supported container CLI. {string.Join(" ", failures)}".Trim());
+        return null;
     }
 
     private static async Task<bool> DockerImageExistsAsync(string image, CancellationToken ct)
@@ -2774,8 +2817,8 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
     /// </summary>
     /// <remarks>
     /// The Dokploy API requires <c>databaseName</c>, <c>databaseUser</c>, and <c>databasePassword</c>
-    /// to be non-empty strings for PostgreSQL, MySQL, and MariaDB. When Aspire doesn't provide
-    /// custom values, sensible defaults are used (e.g., resource name as database name, "postgres"
+    /// to be non-empty strings for PostgreSQL, MySQL, MariaDB, and MongoDB. When Aspire doesn't provide
+    /// custom values, sensible defaults are used (e.g., resource name as database/user name, "postgres"
     /// as user for PostgreSQL, auto-generated password).
     /// </remarks>
     /// <returns>
@@ -2844,6 +2887,7 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 databasePassword ??= GenerateDefaultPassword();
 
                 databaseName = resource.Name;
+                databaseUser ??= databaseName;
 
                 break;
 
@@ -2852,12 +2896,14 @@ public sealed partial class DokployEnvironmentResource : DockerComposeEnvironmen
                 {
                     databaseUser = await mongoUserParam.GetValueAsync(ct).ConfigureAwait(false);
                 }
+                databaseUser ??= resource.Name;
 
                 if (mongo.PasswordParameter is { } mongoPasswordParam)
                 {
                     var raw = await mongoPasswordParam.GetValueAsync(ct).ConfigureAwait(false);
                     if (raw is not null) databasePassword = SanitizeDokployPassword(raw);
                 }
+                databasePassword ??= GenerateDefaultPassword();
 
                 break;
         }
