@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.2.3" />
+    <PackageReference Include="Aspire.Hosting.Docker" Version="13.2.3" />
     <ProjectReference Include="..\..\src\Sorvia.Aspire.Hosting.Dokploy\Sorvia.Aspire.Hosting.Dokploy.csproj" IsAspireProjectResource="false" />
   </ItemGroup>
 </Project>

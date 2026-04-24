@@ -1,13 +1,9 @@
 #pragma warning disable ASPIREINTERACTION001 // This type is used for interaction with the Dokploy REST API and is not intended for direct use by application code. Suppress this diagnostic to proceed.
 #pragma warning disable ASPIREATS001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
-using System.Runtime.CompilerServices;
 using Aspire.Hosting.ApplicationModel;
-using Aspire.Hosting.Docker;
 using Aspire.Hosting.Dokploy;
 using Aspire.Hosting.Lifecycle;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Aspire.Hosting;
 
@@ -56,8 +52,7 @@ public static class DokployEnvironmentExtensions
 {
     internal static IDistributedApplicationBuilder AddDokployInfrastructureCore(this IDistributedApplicationBuilder builder)
     {
-        // builder.Services.TryAddEventingSubscriber<DockerComposeInfrastructure>();
-        // builder.Services.TryAddEventingSubscriber<DokployInfrastructure>();
+        builder.Services.TryAddEventingSubscriber<DokployInfrastructure>();
 
         return builder;
     }
@@ -103,10 +98,6 @@ public static class DokployEnvironmentExtensions
         {
             // Initialize the dashboard resource
             Dashboard = builder.CreateAspireDashboard($"{name}-dashboard")
-                .PublishAsDockerComposeService((_, service) =>
-                {
-                    service.Restart = "always";
-                })
         };
 
         if (builder.ExecutionContext.IsRunMode)
@@ -116,12 +107,16 @@ public static class DokployEnvironmentExtensions
             return builder.CreateResourceBuilder(resource);
         }
 
-        resource.ServerUrlParameter = builder.AddParameter("dokploy-url").Resource;
+        resource.ServerUrlParameter = builder.AddParameter("dokploy-url")
+            .WithDescription("URL of the Dokploy server to deploy to.")
+            .Resource;
 
-        resource.ApiKeyParameter = builder.AddParameter("dokploy-api-key", secret: true).Resource;
+        resource.ApiKeyParameter = builder.AddParameter("dokploy-api-key", secret: true)
+            .WithDescription("API key for authenticating with the Dokploy server.")
+            .Resource;
 
         resource.ProjectNameParameter = builder.AddParameter("dokploy-project-name")
-            .WithDescription("Target Dokploy project name.")
+            .WithDescription("Target Dokploy project name. Leave empty to use the environment name.")
             .WithCustomInput(parameter => new()
             {
                 Name = parameter.Name,

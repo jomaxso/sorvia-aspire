@@ -6,6 +6,7 @@ namespace Aspire.Hosting.Dokploy;
 #pragma warning disable ASPIREATS001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 #pragma warning disable ASPIREPIPELINES001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
+
 [AspireExport(ExposeProperties = true)]
 public class DokployEnvironmentResource : Resource, IComputeEnvironmentResource
 {
@@ -38,8 +39,12 @@ public class DokployEnvironmentResource : Resource, IComputeEnvironmentResource
     /// </summary>
     public ParameterResource? DeploymentEnvironmentNameParameter { get; set; }
 
-
-    public IResourceBuilder<DokployAspireDashboardResource>? Dashboard { get; set; }
+    /// <summary>
+    /// The Aspire Dashboard resource to deploy alongside application resources.
+    /// When set, the dashboard is deployed to the same Dokploy environment and can be accessed via the <see cref="DokployAspireDashboardResource.PrimaryEndpoint"/>.
+    /// </summary>
+    internal IResourceBuilder<DokployAspireDashboardResource>? Dashboard { get; set; }
+    // internal Dictionary<IResource, DokployServiceResource> ResourceMapping { get; } = new(new ResourceNameComparer());
 
     public DokployEnvironmentResource(string name) : base(name)
     {

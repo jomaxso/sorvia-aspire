@@ -1,20 +1,17 @@
 #pragma warning disable ASPIRECSHARPAPPS001
+#pragma warning disable ASPIREPIPELINES001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+
+using Aspire.Hosting.Docker;
+using Aspire.Hosting.Pipelines;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-builder.AddDokployEnvironment("demo");
-
-// builder.AddDockerComposeEnvironment("docker-compose-demo");
+builder.AddDockerComposeEnvironment("demo")
+    .WithDokployDeploymentTarget();
 
 var server = builder.AddCSharpApp("server", "../demo.Server")
     .WithHttpHealthCheck("/health")
     .WithExternalHttpEndpoints();
-
-var mariadb = builder.AddDokployMariaDB("mariadb");
-var mongodb = builder.AddDokployMongoDB("mongodb");
-var mysql = builder.AddDokployMySql("mysql");
-var postgres = builder.AddDokployPostgres("postgres");
-var redis = builder.AddDokployRedis("redis");
 
 var webfrontend = builder.AddViteApp("webfrontend", "../frontend")
     .WithReference(server)
@@ -22,26 +19,48 @@ var webfrontend = builder.AddViteApp("webfrontend", "../frontend")
 
 server.PublishWithContainerFiles(webfrontend, "wwwroot");
 
-// Test the database integrations by referencing the database resources from the server resource, to ensure that the resource definitions are correct and can be used by other resources in the application.
-
-server.WithReference(mariadb)
-    .WithReference(mongodb)
-    .WithReference(mysql)
-    .WithReference(postgres)
-    .WithReference(redis);
-
-// Test the database integrations with custom container images as well, to ensure that the resource definitions are correct and can be used by other resources in the application.
-
-var containerMariadb = builder.AddMySql("container-mariadb");
-var containerMongodb = builder.AddMongoDB("container-mongodb");
-var containerMysql = builder.AddMySql("container-mysql");
-var containerPostgres = builder.AddPostgres("container-postgres");
-var containerRedis = builder.AddRedis("container-redis");
-
-server.WithReference(containerMariadb)
-    .WithReference(containerMongodb)
-    .WithReference(containerMysql)
-    .WithReference(containerPostgres)
-    .WithReference(containerRedis);
-
 builder.Build().Run();
+
+internal static class DokployDeploymentExtensions
+{
+    public static IResourceBuilder<DockerComposeEnvironmentResource> WithDokployDeploymentTarget(this IResourceBuilder<DockerComposeEnvironmentResource> environment)
+    {
+        if (environment.ApplicationBuilder.ExecutionContext.IsRunMode)
+        {
+            return environment;
+        }
+
+        var resource = environment.Resource;
+
+        var stepAnnotations = resource.Annotations
+            .OfType<PipelineStepAnnotation>()
+            .ToArray();
+
+        foreach (var annotation in stepAnnotations)
+        {
+            var wrapper = new PipelineStepAnnotation(async (factoryContext) =>
+            {
+                List<PipelineStep> steps = [.. await annotation.CreateStepsAsync(factoryContext).ConfigureAwait(false)];
+
+                steps.RemoveAll(s => s.Name == $"docker-compose-up-{resource.Name}");
+
+                steps.Add(new PipelineStep
+                {
+                    Name = $"docker-compose-up-{resource.Name}",
+                    Description = $"Deploy resources for environment {resource.Name} using Dokploy",
+                    Tags = ["docker-compose-up"],
+                    Action = ctx => Task.CompletedTask, // TODO: here we can write the logic for the Dokploy deployment
+                    DependsOnSteps = [$"prepare-{resource.Name}"],
+                    RequiredBySteps = [WellKnownPipelineSteps.Deploy],
+                });
+
+                return steps;
+            });
+
+            resource.Annotations.Remove(annotation);
+            resource.Annotations.Add(wrapper);
+        }
+
+        return environment;
+    }
+}
