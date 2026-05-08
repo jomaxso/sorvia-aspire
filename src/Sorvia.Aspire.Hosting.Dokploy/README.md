@@ -54,6 +54,8 @@ builder.AddDockerComposeEnvironment("demo")
 Both forms reuse the Docker Compose publish/prepare pipeline and replace the final `docker compose up` deploy step with Dokploy REST API orchestration. In run mode the Dokploy deployment target is not active, so the application still runs locally as usual.
 The explicit Docker Compose form mirrors the current demo application in this repository under `demo/demo.AppHost`.
 
+`aspire destroy` is also wired to Dokploy. The package replaces the Docker Compose destroy step with a Dokploy cleanup step that removes the deployed applications, their domains, Dokploy-native databases, and the auto-bootstrapped project registry. After those resources are gone, the Dokploy project itself is removed only when it no longer contains any services; if the project contains unrelated services, it is kept.
+
 ## Configuration
 
 `AddDokployEnvironment("my-project")` automatically creates Aspire parameters for:

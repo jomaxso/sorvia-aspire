@@ -110,3 +110,15 @@ Collect and display:
 | 🔗 *resource* | `https://frontend-my-app.example.com` |
 | 📚 Registry | `container-registry-my-app.1.2.3.4.sslip.io` |
 | 🗃️ *database* | `postgres-host:5432/mydb` |
+
+## Destroy Flow
+
+`aspire destroy` uses the same resolved Dokploy target configuration, but it does not create missing Dokploy objects. The integration replaces Docker Compose's `destroy-compose-{name}` pipeline step with a Dokploy cleanup step.
+
+1. Resolve and validate the Dokploy server URL, API key, project name, and environment name.
+2. Find the matching project in the active Dokploy organization. If the project does not exist, destroy is a no-op.
+3. Find the target environment inside that project. If it does not exist, destroy removes the project only if it is already empty.
+4. Delete applications whose names match the Aspire compute resources, removing their managed domains first.
+5. Delete Dokploy-native PostgreSQL, Redis, MySQL, MariaDB, and MongoDB resources whose names match the annotated Aspire database resources.
+6. If the deployment used the auto-bootstrapped project registry, delete the registry Compose service with volumes and remove the Dokploy registry record.
+7. Inspect the project. If no applications, compose services, or native databases remain, remove the project. If unrelated services remain, keep the project and report that in the summary.

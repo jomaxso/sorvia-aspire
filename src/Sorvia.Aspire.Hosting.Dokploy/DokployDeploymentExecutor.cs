@@ -57,6 +57,12 @@ public sealed partial class DokployDeploymentExecutor
         DokployDeploymentTargetAnnotation target)
         => new DokployDeploymentExecutor(target).DeployToDokployAsync(context, environment);
 
+    internal static Task DestroyDokployAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).DestroyDokployAsync(context, environment);
+
     private sealed record DokployAutoRegistry(
         string RegistryName,
         string ComposeName,
@@ -386,6 +392,133 @@ public sealed partial class DokployDeploymentExecutor
                 context.Summary.Add($"🗃️ {entry.ResourceName}", entry.Endpoint);
             }
         }
+    }
+
+    /// <summary>
+    /// Destroys the Dokploy resources that correspond to this Aspire deployment target.
+    /// The project shell is removed only when no Dokploy services remain after cleanup.
+    /// </summary>
+    private async Task DestroyDokployAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+
+        if (_target.DefaultContainerRegistry is null
+            && environment.TryGetLastAnnotation<ContainerRegistryReferenceAnnotation>(out var registryReference))
+        {
+            _target.DefaultContainerRegistry = registryReference.Registry;
+        }
+
+        var (serverUrlResolved, apiKeyResolved) = await ValidateDokployConfigurationAsync(
+            context,
+            _target,
+            "Validating Dokploy destroy configuration").ConfigureAwait(false);
+
+        var projectName = await ResolveProjectNameAsync(_target, environment.Name, ct).ConfigureAwait(false);
+        var deploymentEnvironmentName = await ResolveDeploymentEnvironmentNameAsync(_target, ct).ConfigureAwait(false);
+
+        using var client = new DokployApiClient(serverUrlResolved, apiKeyResolved);
+        DokployOrganization? activeOrganization = null;
+        try
+        {
+            activeOrganization = await client.GetActiveOrganizationAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            context.Logger.LogDebug(ex, "Could not resolve active Dokploy organization.");
+        }
+
+        var project = await FindProjectAsync(client, projectName, activeOrganization, context.Logger, ct).ConfigureAwait(false);
+        if (project is null)
+        {
+            context.Logger.LogInformation("Dokploy project '{ProjectName}' does not exist. Nothing to destroy.", projectName);
+            context.Summary.Add("🚀 Target", "Dokploy");
+            context.Summary.Add("🌐 Server", serverUrlResolved);
+            context.Summary.Add("📦 Project", projectName);
+            context.Summary.Add("Destroy", "Project not found");
+            return;
+        }
+
+        var projectEnvironment = FindProjectEnvironment(project, deploymentEnvironmentName);
+        if (projectEnvironment is null)
+        {
+            context.Logger.LogInformation(
+                "Dokploy environment '{EnvironmentName}' does not exist in project '{ProjectName}'.",
+                deploymentEnvironmentName,
+                project.Name);
+
+            var projectRemoved = await TryRemoveEmptyProjectAsync(client, project, context.Logger, ct).ConfigureAwait(false);
+            context.Summary.Add("🚀 Target", "Dokploy");
+            context.Summary.Add("🌐 Server", serverUrlResolved);
+            context.Summary.Add("📦 Project", project.Name);
+            context.Summary.Add("🧭 Environment", deploymentEnvironmentName);
+            context.Summary.Add("Destroy", projectRemoved ? "Project removed" : "Environment not found");
+            return;
+        }
+
+        var computeResources = GetDestroyComputeResources(context.Model, environment);
+        var destroyedResources = new List<string>();
+
+        var destroyTask = await context.ReportingStep.CreateTaskAsync(
+            $"Destroying Dokploy resources for project '{project.Name}'", ct).ConfigureAwait(false);
+
+        await using (destroyTask.ConfigureAwait(false))
+        {
+            try
+            {
+                foreach (var resource in computeResources)
+                {
+                    destroyedResources.AddRange(await DestroyApplicationsAsync(
+                        client,
+                        resource,
+                        projectEnvironment.EnvironmentId,
+                        context.Logger,
+                        ct).ConfigureAwait(false));
+                }
+
+                destroyedResources.AddRange(await DestroyNativeDatabasesAsync(
+                    context,
+                    client,
+                    projectEnvironment.EnvironmentId,
+                    ct).ConfigureAwait(false));
+
+                if (ShouldBootstrapProjectRegistry(this, computeResources))
+                {
+                    destroyedResources.AddRange(await DestroyProjectRegistryAsync(
+                        client,
+                        project,
+                        projectEnvironment,
+                        serverUrlResolved,
+                        context.Logger,
+                        ct).ConfigureAwait(false));
+                }
+
+                await destroyTask.CompleteAsync(
+                    $"Destroyed {destroyedResources.Count} Dokploy resource(s)",
+                    CompletionState.Completed,
+                    ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await destroyTask.CompleteAsync(
+                    $"Dokploy destroy failed: {ex.Message}",
+                    CompletionState.CompletedWithError,
+                    ct).ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        var removedProject = await TryRemoveEmptyProjectAsync(client, project, context.Logger, ct).ConfigureAwait(false);
+
+        context.Summary.Add("🚀 Target", "Dokploy");
+        context.Summary.Add("🌐 Server", serverUrlResolved);
+        if (activeOrganization is not null)
+        {
+            context.Summary.Add("🏢 Organization", activeOrganization.Name);
+        }
+        context.Summary.Add("📦 Project", project.Name);
+        context.Summary.Add("🧭 Environment", projectEnvironment.Name);
+        context.Summary.Add("Destroyed resources", destroyedResources.Count.ToString(CultureInfo.InvariantCulture));
+        context.Summary.Add("Project", removedProject ? "Removed" : "Kept because other services remain or removal was not allowed");
     }
 
     private static async Task<(string ServerUrl, string ApiKey)> ValidateDokployConfigurationAsync(
@@ -788,6 +921,334 @@ public sealed partial class DokployDeploymentExecutor
             logger.LogInformation("Removed Dokploy domain '{Host}' (ID: {DomainId})", domain.Host, domain.DomainId);
         }
     }
+
+    private static IReadOnlyList<IResource> GetDestroyComputeResources(
+        DistributedApplicationModel model,
+        DockerComposeEnvironmentResource environment)
+    {
+        var resources = model.Resources
+            .Where(resource => resource != environment)
+            .Where(resource => !resource.TryGetAnnotationsOfType<DokployDatabaseAnnotation>(out _))
+            .Where(resource => resource is ProjectResource or ContainerResource or DockerComposeAspireDashboardResource)
+            .ToList();
+
+        if (TryGetDashboardResource(environment) is { } dashboardResource
+            && !resources.Contains(dashboardResource))
+        {
+            resources.Add(dashboardResource);
+        }
+
+        return resources;
+    }
+
+    private static async Task<IReadOnlyList<string>> DestroyApplicationsAsync(
+        DokployApiClient client,
+        IResource resource,
+        string environmentId,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var appName = SanitizeName(resource.Name);
+        var applications = FindExactEnvironmentMatches(
+            await client.SearchApplicationsAsync(appName, environmentId, ct).ConfigureAwait(false),
+            environmentId,
+            appName,
+            application => application.Name,
+            application => application.EnvironmentId,
+            application => application.CreatedAt);
+
+        var destroyed = new List<string>(applications.Count);
+        foreach (var application in applications)
+        {
+            await RemoveApplicationDomainsAsync(client, application.ApplicationId, logger, ct).ConfigureAwait(false);
+            await client.DeleteApplicationAsync(application.ApplicationId, ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "Deleted Dokploy application '{ApplicationName}' (ID: {ApplicationId})",
+                application.Name,
+                application.ApplicationId);
+            destroyed.Add($"application:{application.Name}");
+        }
+
+        return destroyed;
+    }
+
+    private static async Task<IReadOnlyList<string>> DestroyNativeDatabasesAsync(
+        PipelineStepContext context,
+        DokployApiClient client,
+        string environmentId,
+        CancellationToken ct)
+    {
+        var dbResources = context.Model.Resources
+            .Where(resource => resource.TryGetAnnotationsOfType<DokployDatabaseAnnotation>(out _))
+            .ToList();
+
+        var destroyed = new List<string>();
+        foreach (var resource in dbResources)
+        {
+            var annotation = resource.Annotations.OfType<DokployDatabaseAnnotation>().First();
+            var dbName = SanitizeName(resource.Name);
+
+            switch (annotation.DatabaseType)
+            {
+                case DokployDatabaseType.Postgres:
+                    foreach (var postgres in FindExactEnvironmentMatches(
+                        await client.SearchPostgresAsync(dbName, environmentId, ct).ConfigureAwait(false),
+                        environmentId,
+                        dbName,
+                        database => database.Name,
+                        database => database.EnvironmentId,
+                        database => database.CreatedAt))
+                    {
+                        await client.RemovePostgresAsync(postgres.PostgresId, ct).ConfigureAwait(false);
+                        context.Logger.LogInformation(
+                            "Removed Dokploy PostgreSQL database '{DatabaseName}' (ID: {DatabaseId})",
+                            postgres.Name,
+                            postgres.PostgresId);
+                        destroyed.Add($"postgres:{postgres.Name}");
+                    }
+                    break;
+
+                case DokployDatabaseType.Redis:
+                    foreach (var redis in FindExactEnvironmentMatches(
+                        await client.SearchRedisAsync(dbName, environmentId, ct).ConfigureAwait(false),
+                        environmentId,
+                        dbName,
+                        database => database.Name,
+                        database => database.EnvironmentId,
+                        database => database.CreatedAt))
+                    {
+                        await client.RemoveRedisAsync(redis.RedisId, ct).ConfigureAwait(false);
+                        context.Logger.LogInformation(
+                            "Removed Dokploy Redis database '{DatabaseName}' (ID: {DatabaseId})",
+                            redis.Name,
+                            redis.RedisId);
+                        destroyed.Add($"redis:{redis.Name}");
+                    }
+                    break;
+
+                case DokployDatabaseType.MySql:
+                    foreach (var mysql in FindExactEnvironmentMatches(
+                        await client.SearchMySqlAsync(dbName, environmentId, ct).ConfigureAwait(false),
+                        environmentId,
+                        dbName,
+                        database => database.Name,
+                        database => database.EnvironmentId,
+                        database => database.CreatedAt))
+                    {
+                        await client.RemoveMySqlAsync(mysql.MySqlId, ct).ConfigureAwait(false);
+                        context.Logger.LogInformation(
+                            "Removed Dokploy MySQL database '{DatabaseName}' (ID: {DatabaseId})",
+                            mysql.Name,
+                            mysql.MySqlId);
+                        destroyed.Add($"mysql:{mysql.Name}");
+                    }
+                    break;
+
+                case DokployDatabaseType.MariaDB:
+                    foreach (var mariadb in FindExactEnvironmentMatches(
+                        await client.SearchMariaDBAsync(dbName, environmentId, ct).ConfigureAwait(false),
+                        environmentId,
+                        dbName,
+                        database => database.Name,
+                        database => database.EnvironmentId,
+                        database => database.CreatedAt))
+                    {
+                        await client.RemoveMariaDBAsync(mariadb.MariaDBId, ct).ConfigureAwait(false);
+                        context.Logger.LogInformation(
+                            "Removed Dokploy MariaDB database '{DatabaseName}' (ID: {DatabaseId})",
+                            mariadb.Name,
+                            mariadb.MariaDBId);
+                        destroyed.Add($"mariadb:{mariadb.Name}");
+                    }
+                    break;
+
+                case DokployDatabaseType.MongoDB:
+                    foreach (var mongo in FindExactEnvironmentMatches(
+                        await client.SearchMongoAsync(dbName, environmentId, ct).ConfigureAwait(false),
+                        environmentId,
+                        dbName,
+                        database => database.Name,
+                        database => database.EnvironmentId,
+                        database => database.CreatedAt))
+                    {
+                        await client.RemoveMongoAsync(mongo.MongoId, ct).ConfigureAwait(false);
+                        context.Logger.LogInformation(
+                            "Removed Dokploy MongoDB database '{DatabaseName}' (ID: {DatabaseId})",
+                            mongo.Name,
+                            mongo.MongoId);
+                        destroyed.Add($"mongo:{mongo.Name}");
+                    }
+                    break;
+            }
+        }
+
+        return destroyed;
+    }
+
+    private static async Task<IReadOnlyList<string>> DestroyProjectRegistryAsync(
+        DokployApiClient client,
+        DokployProject project,
+        DokployProjectEnvironment projectEnvironment,
+        string serverUrl,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var projectSlug = SanitizeName(project.Name);
+        var registryName = $"{projectSlug}-registry";
+        var destroyed = new List<string>();
+
+        var composeServices = FindExactEnvironmentMatches(
+            await client.SearchComposesAsync(registryName, projectEnvironment.EnvironmentId, ct).ConfigureAwait(false),
+            projectEnvironment.EnvironmentId,
+            registryName,
+            compose => compose.Name,
+            compose => compose.EnvironmentId,
+            compose => compose.CreatedAt);
+
+        foreach (var compose in composeServices)
+        {
+            await client.DeleteComposeAsync(compose.ComposeId, deleteVolumes: true, ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "Deleted Dokploy registry compose service '{ComposeName}' (ID: {ComposeId})",
+                compose.Name,
+                compose.ComposeId);
+            destroyed.Add($"compose:{compose.Name}");
+        }
+
+        var registryHost = await TryDeriveSslipRegistryHostAsync(serverUrl, projectSlug, ct).ConfigureAwait(false);
+        var registries = await client.ListRegistriesAsync(ct).ConfigureAwait(false);
+        foreach (var registry in registries.Where(registry =>
+            string.Equals(registry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase)
+            || (!string.IsNullOrWhiteSpace(registryHost)
+                && string.Equals(registry.RegistryUrl, registryHost, StringComparison.OrdinalIgnoreCase))))
+        {
+            if (string.IsNullOrWhiteSpace(registry.RegistryId))
+            {
+                continue;
+            }
+
+            await client.RemoveRegistryAsync(registry.RegistryId, ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "Removed Dokploy registry '{RegistryName}' (ID: {RegistryId})",
+                registry.RegistryName,
+                registry.RegistryId);
+            destroyed.Add($"registry:{registry.RegistryName}");
+        }
+
+        return destroyed;
+    }
+
+    private static async Task<bool> TryRemoveEmptyProjectAsync(
+        DokployApiClient client,
+        DokployProject project,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        JsonDocument document;
+        try
+        {
+            document = await client.GetProjectAsync(project.ProjectId, ct).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Could not inspect Dokploy project '{ProjectName}' before project removal.",
+                project.Name);
+            return false;
+        }
+
+        using (document)
+        {
+            if (ProjectHasServices(document.RootElement))
+            {
+                logger.LogInformation(
+                    "Keeping Dokploy project '{ProjectName}' because it still contains services.",
+                    project.Name);
+                return false;
+            }
+        }
+
+        try
+        {
+            await client.RemoveProjectAsync(project.ProjectId, ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "Removed empty Dokploy project '{ProjectName}' (ID: {ProjectId})",
+                project.Name,
+                project.ProjectId);
+            return true;
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Could not remove empty Dokploy project '{ProjectName}'.",
+                project.Name);
+            return false;
+        }
+    }
+
+    private static bool ProjectHasServices(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (IsDokployServiceCollection(property.Name)
+                        && property.Value.ValueKind == JsonValueKind.Array
+                        && property.Value.GetArrayLength() > 0)
+                    {
+                        return true;
+                    }
+
+                    if (ProjectHasServices(property.Value))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (ProjectHasServices(item))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+
+            default:
+                return false;
+        }
+    }
+
+    private static bool IsDokployServiceCollection(string propertyName)
+        => string.Equals(propertyName, "applications", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(propertyName, "compose", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(propertyName, "libsql", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(propertyName, "mariadb", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(propertyName, "mongo", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(propertyName, "mysql", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(propertyName, "postgres", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(propertyName, "redis", StringComparison.OrdinalIgnoreCase);
+
+    private static IReadOnlyList<T> FindExactEnvironmentMatches<T>(
+        IEnumerable<T> resources,
+        string environmentId,
+        string name,
+        Func<T, string> getName,
+        Func<T, string?> getEnvironmentId,
+        Func<T, DateTimeOffset?> getCreatedAt)
+        where T : class
+        => resources
+            .Where(resource => string.Equals(getEnvironmentId(resource), environmentId, StringComparison.Ordinal))
+            .Where(resource => string.Equals(getName(resource), name, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(resource => getCreatedAt(resource) ?? DateTimeOffset.MinValue)
+            .ToArray();
 
     private static void CollectDomains(JsonElement element, Dictionary<string, DokployDomain> domains)
     {
@@ -2797,24 +3258,23 @@ public sealed partial class DokployDeploymentExecutor
         public static RegistryProbeResult Ready { get; } = new(true, null);
     }
 
-    private static async Task<DokployProject> FindOrCreateProjectAsync(
+    private static async Task<DokployProject?> FindProjectAsync(
         DokployApiClient client,
         string projectName,
-        string environmentName,
         DokployOrganization? activeOrganization,
         ILogger logger,
         CancellationToken ct)
     {
         var projects = await client.ListProjectsAsync(ct).ConfigureAwait(false);
         var matches = projects
-            .Where(p => p.Name.Equals(projectName, StringComparison.OrdinalIgnoreCase))
+            .Where(project => project.Name.Equals(projectName, StringComparison.OrdinalIgnoreCase))
             .ToArray();
 
         DokployProject? existing = null;
         if (activeOrganization is not null)
         {
-            existing = matches.FirstOrDefault(p =>
-                string.Equals(p.OrganizationId, activeOrganization.OrganizationId, StringComparison.OrdinalIgnoreCase));
+            existing = matches.FirstOrDefault(project =>
+                string.Equals(project.OrganizationId, activeOrganization.OrganizationId, StringComparison.OrdinalIgnoreCase));
         }
         else
         {
@@ -2845,6 +3305,29 @@ public sealed partial class DokployDeploymentExecutor
             }
         }
 
+        return null;
+    }
+
+    private static DokployProjectEnvironment? FindProjectEnvironment(
+        DokployProject project,
+        string environmentName)
+        => project.Environments?.FirstOrDefault(environment =>
+            NormalizeDokployEnvironmentName(environment.Name) == environmentName);
+
+    private static async Task<DokployProject> FindOrCreateProjectAsync(
+        DokployApiClient client,
+        string projectName,
+        string environmentName,
+        DokployOrganization? activeOrganization,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var existing = await FindProjectAsync(client, projectName, activeOrganization, logger, ct).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
         logger.LogInformation("Creating new Dokploy project '{ProjectName}'", projectName);
         return await client.CreateProjectAsync(
             projectName,
@@ -2862,8 +3345,7 @@ public sealed partial class DokployDeploymentExecutor
     {
         if (project.Environments is { Length: > 0 })
         {
-            var existing = project.Environments.FirstOrDefault(e =>
-                NormalizeDokployEnvironmentName(e.Name) == environmentName);
+            var existing = FindProjectEnvironment(project, environmentName);
 
             if (existing is not null)
             {

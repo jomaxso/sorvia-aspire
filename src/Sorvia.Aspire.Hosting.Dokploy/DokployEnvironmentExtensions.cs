@@ -42,6 +42,7 @@ namespace Aspire.Hosting;
 ///   <item><description><c>publish-{name}</c> — Runs the exact Aspire.Hosting.Docker publish implementation. RequiredBy <c>Publish</c>.</description></item>
 ///   <item><description><c>prepare-{name}</c> — Runs the exact Aspire.Hosting.Docker prepare implementation before deployment.</description></item>
 ///   <item><description><c>docker-compose-up-{name}</c> — Validates Dokploy configuration and deploys resources to Dokploy. DependsOn <c>prepare-{name}</c>, RequiredBy <c>Deploy</c>.</description></item>
+///   <item><description><c>destroy-compose-{name}</c> — Deletes Dokploy applications, native databases, auto-registry resources, and removes the empty project shell. RequiredBy <c>Destroy</c>.</description></item>
 /// </list>
 ///
 /// <para><b>Configuration:</b></para>
@@ -170,6 +171,7 @@ public static class DokployEnvironmentExtensions
             {
                 var steps = new List<PipelineStep>(await annotation.CreateStepsAsync(factoryContext).ConfigureAwait(false));
                 steps.RemoveAll(step => string.Equals(step.Name, $"docker-compose-up-{resource.Name}", StringComparison.Ordinal));
+                steps.RemoveAll(step => string.Equals(step.Name, $"destroy-compose-{resource.Name}", StringComparison.Ordinal));
                 steps.RemoveAll(IsDockerComposePrintSummaryStep);
 
                 steps.Add(new PipelineStep
@@ -181,6 +183,17 @@ public static class DokployEnvironmentExtensions
                     Action = ctx => DokployDeploymentExecutor.DeployToDokployAsync(ctx, resource, target),
                     DependsOnSteps = [$"prepare-{resource.Name}"],
                     RequiredBySteps = [WellKnownPipelineSteps.Deploy],
+                });
+
+                steps.Add(new PipelineStep
+                {
+                    Name = $"destroy-compose-{resource.Name}",
+                    Description = $"Destroy Dokploy resources for environment {resource.Name}",
+                    Tags = ["destroy-compose", "dokploy", "dokploy-destroy"],
+                    Resource = resource,
+                    Action = ctx => DokployDeploymentExecutor.DestroyDokployAsync(ctx, resource, target),
+                    DependsOnSteps = [WellKnownPipelineSteps.DestroyPrereq],
+                    RequiredBySteps = [WellKnownPipelineSteps.Destroy],
                 });
 
                 return steps;

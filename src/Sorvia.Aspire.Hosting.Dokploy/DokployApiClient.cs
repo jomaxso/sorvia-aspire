@@ -289,6 +289,16 @@ internal sealed class DokployApiClient : IDisposable
             },
             ct);
 
+    /// <summary>
+    /// Deletes a Dokploy compose service and optionally its Docker volumes.
+    /// POST /compose.delete { composeId, deleteVolumes }
+    /// </summary>
+    public async Task DeleteComposeAsync(string composeId, bool deleteVolumes, CancellationToken ct = default)
+    {
+        var payload = new { composeId, deleteVolumes };
+        using var _ = await PostJsonAsync("compose.delete", payload, ct: ct).ConfigureAwait(false);
+    }
+
     // ── Application endpoints ──────────────────────────────────────────
 
     /// <summary>
@@ -362,6 +372,16 @@ internal sealed class DokployApiClient : IDisposable
     {
         var payload = new { applicationId, title, description };
         using var _ = await PostJsonAsync("application.deploy", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Deletes a Dokploy application.
+    /// POST /application.delete { applicationId }
+    /// </summary>
+    public async Task DeleteApplicationAsync(string applicationId, CancellationToken ct = default)
+    {
+        var payload = new { applicationId };
+        using var _ = await PostJsonAsync("application.delete", payload, ct: ct).ConfigureAwait(false);
     }
 
     // ── Postgres endpoints ─────────────────────────────────────────────
@@ -784,6 +804,16 @@ internal sealed class DokployApiClient : IDisposable
     }
 
     /// <summary>
+    /// Removes a Redis database.
+    /// POST /redis.remove { redisId }
+    /// </summary>
+    public async Task RemoveRedisAsync(string redisId, CancellationToken ct = default)
+    {
+        var payload = new { redisId };
+        using var _ = await PostJsonAsync("redis.remove", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Triggers deployment of a MySQL database.
     /// POST /mysql.deploy { mysqlId }
     /// </summary>
@@ -791,6 +821,16 @@ internal sealed class DokployApiClient : IDisposable
     {
         var payload = new { mysqlId };
         using var _ = await PostJsonAsync("mysql.deploy", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a MySQL database.
+    /// POST /mysql.remove { mysqlId }
+    /// </summary>
+    public async Task RemoveMySqlAsync(string mysqlId, CancellationToken ct = default)
+    {
+        var payload = new { mysqlId };
+        using var _ = await PostJsonAsync("mysql.remove", payload, ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -804,6 +844,16 @@ internal sealed class DokployApiClient : IDisposable
     }
 
     /// <summary>
+    /// Removes a MariaDB database.
+    /// POST /mariadb.remove { mariadbId }
+    /// </summary>
+    public async Task RemoveMariaDBAsync(string mariadbId, CancellationToken ct = default)
+    {
+        var payload = new { mariadbId };
+        using var _ = await PostJsonAsync("mariadb.remove", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Triggers deployment of a MongoDB instance.
     /// POST /mongo.deploy { mongoId }
     /// </summary>
@@ -811,6 +861,16 @@ internal sealed class DokployApiClient : IDisposable
     {
         var payload = new { mongoId };
         using var _ = await PostJsonAsync("mongo.deploy", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a MongoDB database.
+    /// POST /mongo.remove { mongoId }
+    /// </summary>
+    public async Task RemoveMongoAsync(string mongoId, CancellationToken ct = default)
+    {
+        var payload = new { mongoId };
+        using var _ = await PostJsonAsync("mongo.remove", payload, ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>Reads a Dokploy PostgreSQL instance.</summary>
@@ -832,6 +892,30 @@ internal sealed class DokployApiClient : IDisposable
     /// <summary>Reads a Dokploy MongoDB instance.</summary>
     public Task<JsonDocument> GetMongoAsync(string mongoId, CancellationToken ct = default)
         => GetDocumentAsync("mongo.one", new Dictionary<string, string?> { ["mongoId"] = mongoId }, ct);
+
+    /// <summary>Reads a Dokploy project with environments and services.</summary>
+    public Task<JsonDocument> GetProjectAsync(string projectId, CancellationToken ct = default)
+        => GetDocumentAsync("project.one", new Dictionary<string, string?> { ["projectId"] = projectId }, ct);
+
+    /// <summary>
+    /// Removes a Dokploy project.
+    /// POST /project.remove { projectId }
+    /// </summary>
+    public async Task RemoveProjectAsync(string projectId, CancellationToken ct = default)
+    {
+        var payload = new { projectId };
+        using var _ = await PostJsonAsync("project.remove", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a Dokploy registry.
+    /// POST /registry.remove { registryId }
+    /// </summary>
+    public async Task RemoveRegistryAsync(string registryId, CancellationToken ct = default)
+    {
+        var payload = new { registryId };
+        using var _ = await PostJsonAsync("registry.remove", payload, ct: ct).ConfigureAwait(false);
+    }
 
     public void Dispose() => _httpClient.Dispose();
 }
