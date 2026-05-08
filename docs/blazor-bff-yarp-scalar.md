@@ -198,8 +198,20 @@ app.MapForwarder("/scalar/{**catch-all}", "http://scalar",
         return ValueTask.CompletedTask;
     }));
 
-// Scalar-interner Proxy zum Laden der OpenAPI-Spezifikation
-app.MapForwarder("/scalar-proxy", "http://scalar/scalar-proxy");
+// Scalar-interner Proxy zum Laden der OpenAPI-Spezifikation.
+// Bearer Token wird als X-Forwarded-Authorization mitgeschickt,
+// damit Scalar ihn bei Try-Out-Requests an die API weiterleitet.
+app.MapForwarder("/scalar-proxy", "http://scalar/scalar-proxy",
+    new ForwarderRequestConfig(),
+    HttpTransformer.Create(async (ctx, proxyReq, _) =>
+    {
+        var token = await ctx.GetTokenAsync("access_token");
+        if (token is not null)
+        {
+            proxyReq.Headers.TryAddWithoutValidation(
+                "X-Forwarded-Authorization", $"Bearer {token}");
+        }
+    }));
 
 // API — Bearer Token aus BFF-Session anhängen
 app.MapForwarder("/api/{**catch-all}", "http://api",
@@ -240,7 +252,8 @@ app.Run();
 var api = builder.AddProject<Projects.MyApi>("api");
 
 var scalar = builder.AddScalarApiReference("scalar", options =>
-        options.WithTheme(ScalarTheme.Default))
+        options.WithTheme(ScalarTheme.Default)
+               .WithBaseServerUrl("/api"))  // Try-Out-Buttons zeigen auf BFF /api
     .WithApiReference(api);
 
 var bff = builder.AddProject<Projects.MyBlazorBff>("bff")
@@ -251,6 +264,42 @@ var bff = builder.AddProject<Projects.MyBlazorBff>("bff")
 
 Aspire Service Discovery löst `http://api` und `http://scalar` zur Laufzeit auf die
 tatsächlichen Container-Adressen auf — keine Hardcodierung notwendig.
+
+## Scalar Try-Out mit Auth
+
+Da Scalar unter `/scalar/` auf derselben Origin wie das BFF läuft, schickt der Browser
+den Session-Cookie bei jedem Request automatisch mit. Damit die Try-Out-Buttons
+in Scalar gegen die geschützte API funktionieren, sind zwei Dinge nötig:
+
+**1. `baseServerURL` auf `/api` setzen** (AppHost):
+```csharp
+options.WithBaseServerUrl("/api")
+```
+Damit zeigen alle Try-Out-Requests auf `BFF/api/...` statt direkt auf die API —
+der `/api`-Forwarder hängt dann wie gewohnt den Bearer Token an.
+
+**2. Bearer Token im `/scalar-proxy` weiterleiten** (für den OpenAPI-Spec-Fetch):
+Der `X-Forwarded-Authorization`-Header wird vom Scalar-Container bei
+Try-Out-Requests an die API durchgereicht.
+
+Der vollständige Ablauf eines authentifizierten Try-Out-Requests:
+
+```mermaid
+sequenceDiagram
+    actor Dev as Entwickler
+    participant Browser
+    participant BFF as BFF (YARP)
+    participant API as API-Service
+
+    Dev->>Browser: Klick "Try Out" in Scalar
+    Browser->>BFF: POST /api/endpoint (Cookie, gleiche Origin)
+    BFF->>BFF: Bearer Token aus Session lesen
+    BFF->>API: POST /endpoint\nAuthorization: Bearer <token>
+    API->>API: Token validieren ✓
+    API->>BFF: 200 OK
+    BFF->>Browser: 200 OK
+    Browser->>Dev: Response in Scalar UI anzeigen
+```
 
 ## Warum kein Token im WASM-Client?
 
