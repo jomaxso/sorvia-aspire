@@ -62,6 +62,7 @@ function App() {
         </a>
         <h1 className="app-title">Aspire Starter</h1>
         <p className="app-subtitle">Modern distributed application development</p>
+        <a className="app-subtitle" href="/docs/" target="_blank" rel="noopener noreferrer">View API documentation</a>
       </header>
 
       <main className="main-content">
