@@ -2,6 +2,8 @@
 
 High-level overview of the `DokployDeploymentExecutor.DeployToDokployAsync` pipeline.
 
+For a detailed architecture walkthrough with Mermaid diagrams, see [Dokploy Deployment Architecture](dokploy-deployment-architecture.md).
+
 ---
 
 ## 1. Validate Configuration
@@ -13,7 +15,7 @@ High-level overview of the `DokployDeploymentExecutor.DeployToDokployAsync` pipe
 
 ## 2. Resolve Deployment Parameters
 
-- Resolve the **project name** from the environment resource parameter.
+- Resolve the **project name** from the Dokploy deployment target parameter.
 - Resolve the **deployment environment name** (e.g. `production`); normalize to lowercase, default to `"production"` when empty.
 - Optionally resolve the **active organization** (used to scope project lookup).
 
@@ -26,7 +28,7 @@ High-level overview of the `DokployDeploymentExecutor.DeployToDokployAsync` pipe
 ## 4. Identify Compute Resources
 
 - Filter the Aspire application model to collect **deployable compute resources**: `ProjectResource`, `ContainerResource`, and the optional Aspire Dashboard.
-- Exclude the `DokployEnvironmentResource` itself, resources annotated as Dokploy-native databases, and resources without a published Compose service mapping.
+- Exclude the `DockerComposeEnvironmentResource` itself, resources annotated as Dokploy-native databases, and resources without a published Compose service mapping.
 
 ## 5. Bootstrap Project Container Registry (if needed)
 

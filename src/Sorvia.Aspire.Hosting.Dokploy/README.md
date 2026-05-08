@@ -38,14 +38,21 @@ var webfrontend = builder.AddViteApp("webfrontend", "../frontend")
 
 server.PublishWithContainerFiles(webfrontend, "wwwroot");
 
-// Deploy everything to Dokploy in publish mode
+// High-level shortcut: create a Docker Compose environment and deploy it to Dokploy
 builder.AddDokployEnvironment("demo");
 
 builder.Build().Run();
 ```
 
-`AddDokployEnvironment` auto-detects **all resources** in the Aspire application model and handles deployment when the AppHost runs in publish mode (`dotnet run --publisher dokploy`). In run mode the Dokploy environment is not added to the model — everything runs locally as usual.
-The example above mirrors the current demo application in this repository under `demo/demo.AppHost`.
+`AddDokployEnvironment` is the high-level shortcut for a Docker Compose publishing environment whose deploy step targets Dokploy. If you already want to configure a Docker Compose environment explicitly, use the equivalent adapter form:
+
+```csharp
+builder.AddDockerComposeEnvironment("demo")
+    .WithDokployDeploymentTarget();
+```
+
+Both forms reuse the Docker Compose publish/prepare pipeline and replace the final `docker compose up` deploy step with Dokploy REST API orchestration. In run mode the Dokploy deployment target is not active, so the application still runs locally as usual.
+The explicit Docker Compose form mirrors the current demo application in this repository under `demo/demo.AppHost`.
 
 ## Configuration
 
@@ -68,7 +75,6 @@ When the API key can access multiple Dokploy organizations, deployments target t
 
 ```csharp
 builder.AddDokployEnvironment("my-roadmap")
-    .WithServerId("server-123")   // target a specific Dokploy server
     .WithDashboard(true);         // enabled by default
 ```
 
@@ -268,19 +274,20 @@ The integration follows the Docker Compose publisher shape from `Aspire.Hosting.
 
 The publish and prepare steps reuse `Aspire.Hosting.Docker` internals. The compose object model (`ComposeFile`, `Service`, `Network`, `Volume`) is also used for Dokploy-managed stacks such as the project registry.
 
+For a detailed architecture walkthrough with Mermaid diagrams, see the [Dokploy deployment architecture guide](https://github.com/jomaxso/sorvia-aspire/blob/main/docs/dokploy-deployment-architecture.md).
+
 ## API Reference
 
 ### Environment Extensions
 
 | Method | Description |
 |--------|-------------|
-| `AddDokployEnvironment(name)` | Adds a Dokploy deployment target (publish mode only) |
-| `.WithServerId(string\|parameter)` | Target a specific Dokploy server |
+| `AddDokployEnvironment(name)` | Adds a Docker Compose publishing environment that deploys to Dokploy |
+| `.WithDokployDeploymentTarget()` | Converts an existing Docker Compose environment to deploy to Dokploy |
 | `.WithDashboard(bool)` | Enable/disable the Aspire Dashboard container (default: `true`) |
 | `.WithContainerRegistry(registry)` | Set a default container registry for all resources |
 | `.ConfigureComposeFile(Action<ComposeFile>)` | Customize the generated Docker Compose file |
 | `.ConfigureEnvFile(Action<IDictionary<...>>)` | Customize captured environment variables |
-| `.WithProperties(Action<DokployEnvironmentResource>)` | Configure resource properties directly |
 
 ### Database Extensions
 
