@@ -247,12 +247,33 @@ internal sealed class DokployApiClient : IDisposable
 
     /// <summary>
     /// Triggers deployment of a Docker Compose service.
-    /// POST /compose.deploy { composeId }
+    /// POST /compose.deploy { composeId, title?, description? }
     /// </summary>
-    public async Task DeployComposeAsync(string composeId, CancellationToken ct = default)
+    public async Task DeployComposeAsync(
+        string composeId,
+        string? title = null,
+        string? description = null,
+        CancellationToken ct = default)
     {
-        var payload = new { composeId };
-        using var _ = await PostJsonAsync("compose.deploy", payload, ct: ct).ConfigureAwait(false);
+        var payload = new { composeId, title, description };
+        using var _ = await PostJsonAsync("compose.deploy", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads deployment records for a compose service.
+    /// GET /deployment.allByCompose
+    /// </summary>
+    public async Task<DokployDeployment[]> GetComposeDeploymentsAsync(string composeId, CancellationToken ct = default)
+    {
+        using var response = await GetJsonAsync(
+            BuildPath(
+                "deployment.allByCompose",
+                new Dictionary<string, string?>
+                {
+                    ["composeId"] = composeId
+                }),
+            ct).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<DokployDeployment[]>(s_jsonOptions, ct).ConfigureAwait(false) ?? [];
     }
 
     /// <summary>
@@ -735,6 +756,42 @@ internal sealed class DokployApiClient : IDisposable
     }
 
     /// <summary>
+    /// Updates an existing domain/routing rule.
+    /// POST /domain.update { domainId, host, port?, serviceName?, domainType?, https, certificateType? }
+    /// </summary>
+    public async Task<DokployDomain> UpdateDomainAsync(
+        string domainId,
+        string host,
+        int port,
+        bool https,
+        string certificateType,
+        string? serviceName = null,
+        string? domainType = null,
+        string path = "/",
+        string internalPath = "/",
+        bool stripPath = false,
+        CancellationToken ct = default)
+    {
+        var payload = new
+        {
+            domainId,
+            host,
+            port,
+            serviceName,
+            domainType,
+            https,
+            certificateType,
+            path,
+            internalPath,
+            stripPath
+        };
+
+        using var response = await PostJsonAsync("domain.update", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<DokployDomain>(s_jsonOptions, ct)
+            ?? throw new InvalidOperationException("Dokploy returned null updated domain.");
+    }
+
+    /// <summary>
     /// Reads domains attached to a compose service.
     /// GET /domain.byComposeId
     /// </summary>
@@ -1006,6 +1063,34 @@ internal sealed record DokployCompose
     public DateTimeOffset? CreatedAt { get; init; }
 }
 
+/// <summary>Dokploy deployment record, returned from deployment.allByCompose.</summary>
+internal sealed record DokployDeployment
+{
+    [JsonPropertyName("deploymentId")]
+    public string DeploymentId { get; init; } = "";
+
+    [JsonPropertyName("title")]
+    public string Title { get; init; } = "";
+
+    [JsonPropertyName("description")]
+    public string? Description { get; init; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
+
+    [JsonPropertyName("createdAt")]
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    [JsonPropertyName("startedAt")]
+    public DateTimeOffset? StartedAt { get; init; }
+
+    [JsonPropertyName("finishedAt")]
+    public DateTimeOffset? FinishedAt { get; init; }
+
+    [JsonPropertyName("errorMessage")]
+    public string? ErrorMessage { get; init; }
+}
+
 /// <summary>Dokploy application, returned from application.create.</summary>
 internal sealed record DokployApplication
 {
@@ -1138,4 +1223,19 @@ internal sealed record DokployDomain
 
     [JsonPropertyName("host")]
     public string Host { get; init; } = "";
+
+    [JsonPropertyName("https")]
+    public bool? Https { get; init; }
+
+    [JsonPropertyName("port")]
+    public int? Port { get; init; }
+
+    [JsonPropertyName("serviceName")]
+    public string? ServiceName { get; init; }
+
+    [JsonPropertyName("domainType")]
+    public string? DomainType { get; init; }
+
+    [JsonPropertyName("certificateType")]
+    public string? CertificateType { get; init; }
 }

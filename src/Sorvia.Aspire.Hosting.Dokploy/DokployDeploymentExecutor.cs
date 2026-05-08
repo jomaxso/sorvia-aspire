@@ -11,6 +11,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -39,8 +40,11 @@ public sealed partial class DokployDeploymentExecutor
     private const string DefaultServerUrl = "https://panel.dokploy.com";
     private const string DefaultDeploymentEnvironmentName = "production";
 
+    private static readonly TimeSpan s_composeDeploymentTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan s_registryBootstrapTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan s_registryProbeInterval = TimeSpan.FromSeconds(5);
+    private static readonly ConditionalWeakTable<DokployDeploymentTargetAnnotation, DeploymentState> s_deploymentStates = new();
+    private static readonly ConditionalWeakTable<DokployDeploymentTargetAnnotation, DestroyState> s_destroyStates = new();
 
     private readonly DokployDeploymentTargetAnnotation _target;
 
@@ -62,6 +66,96 @@ public sealed partial class DokployDeploymentExecutor
         DockerComposeEnvironmentResource environment,
         DokployDeploymentTargetAnnotation target)
         => new DokployDeploymentExecutor(target).DestroyDokployAsync(context, environment);
+
+    internal static Task ValidateDokployDeploymentAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).ValidateDeploymentAsync(context, environment);
+
+    internal static Task ReconcileDokployProjectAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).ReconcileProjectAsync(context, environment);
+
+    internal static Task EnsureDokployRegistryAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).EnsureProjectRegistryAsync(context, environment);
+
+    internal static Task PushDokployImagesAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).PushProjectRegistryImagesAsync(context, environment);
+
+    internal static Task ProvisionDokployDatabasesAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).ProvisionDatabasesAsync(context, environment);
+
+    internal static Task ConfigureDokployApplicationsAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).ConfigureApplicationsAsync(context, environment);
+
+    internal static Task ReleaseDokployApplicationsAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).ReleaseApplicationsAsync(context, environment);
+
+    internal static Task WriteDokployDeploymentSummaryAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).WriteDeploymentSummaryAsync(context, environment);
+
+    internal static Task ValidateDokployDestroyAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).ValidateDestroyAsync(context, environment);
+
+    internal static Task DiscoverDokployDestroyTargetAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).DiscoverDestroyTargetAsync(context, environment);
+
+    internal static Task DestroyDokployApplicationsAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).DestroyApplicationResourcesAsync(context, environment);
+
+    internal static Task DestroyDokployDatabasesAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).DestroyDatabaseResourcesAsync(context, environment);
+
+    internal static Task DestroyDokployRegistryAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).DestroyRegistryResourcesAsync(context, environment);
+
+    internal static Task RemoveEmptyDokployProjectAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).RemoveEmptyProjectAsync(context, environment);
+
+    internal static Task WriteDokployDestroySummaryAsync(
+        PipelineStepContext context,
+        DockerComposeEnvironmentResource environment,
+        DokployDeploymentTargetAnnotation target)
+        => new DokployDeploymentExecutor(target).WriteDestroySummaryAsync(context, environment);
 
     private sealed record DokployAutoRegistry(
         string RegistryName,
@@ -87,6 +181,68 @@ public sealed partial class DokployDeploymentExecutor
     private sealed record DokployApplicationShell(
         DokployApplication Application,
         bool Created);
+
+    private sealed record ConfiguredApplication(
+        IResource Resource,
+        DokployApplication Application,
+        bool Created,
+        bool Changed);
+
+    private sealed class DeploymentState
+    {
+        public required DockerComposeEnvironmentResource Environment { get; init; }
+
+        public required string ServerUrl { get; init; }
+
+        public required string ApiKey { get; init; }
+
+        public required string ProjectName { get; init; }
+
+        public required string DeploymentEnvironmentName { get; init; }
+
+        public DokployOrganization? ActiveOrganization { get; set; }
+
+        public DokployProject? Project { get; set; }
+
+        public DokployProjectEnvironment? ProjectEnvironment { get; set; }
+
+        public List<IResource> ComputeResources { get; } = [];
+
+        public DokployAutoRegistry? AutoRegistry { get; set; }
+
+        public Dictionary<IResource, DokployDatabaseConnection> DatabaseConnections { get; set; } = [];
+
+        public Dictionary<IResource, string> Hostnames { get; set; } = [];
+
+        public Dictionary<IResource, int> EndpointPorts { get; set; } = [];
+
+        public List<ConfiguredApplication> ConfiguredApplications { get; } = [];
+    }
+
+    private sealed class DestroyState
+    {
+        public required DockerComposeEnvironmentResource Environment { get; init; }
+
+        public required string ServerUrl { get; init; }
+
+        public required string ApiKey { get; init; }
+
+        public required string ProjectName { get; init; }
+
+        public required string DeploymentEnvironmentName { get; init; }
+
+        public DokployOrganization? ActiveOrganization { get; set; }
+
+        public DokployProject? Project { get; set; }
+
+        public DokployProjectEnvironment? ProjectEnvironment { get; set; }
+
+        public IReadOnlyList<IResource> ComputeResources { get; set; } = [];
+
+        public List<string> DestroyedResources { get; } = [];
+
+        public bool ProjectRemoved { get; set; }
+    }
 
     /// <summary>
     /// Resolves the server URL from the generated parameter or an explicit override.
@@ -166,6 +322,18 @@ public sealed partial class DokployDeploymentExecutor
     /// </summary>
     private async Task DeployToDokployAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
     {
+        await ValidateDeploymentAsync(context, environment).ConfigureAwait(false);
+        await ReconcileProjectAsync(context, environment).ConfigureAwait(false);
+        await EnsureProjectRegistryAsync(context, environment).ConfigureAwait(false);
+        await PushProjectRegistryImagesAsync(context, environment).ConfigureAwait(false);
+        await ProvisionDatabasesAsync(context, environment).ConfigureAwait(false);
+        await ConfigureApplicationsAsync(context, environment).ConfigureAwait(false);
+        await ReleaseApplicationsAsync(context, environment).ConfigureAwait(false);
+        await WriteDeploymentSummaryAsync(context, environment).ConfigureAwait(false);
+    }
+
+    private async Task ValidateDeploymentAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
         var ct = context.CancellationToken;
 
         if (_target.DefaultContainerRegistry is null
@@ -176,13 +344,28 @@ public sealed partial class DokployDeploymentExecutor
 
         var (serverUrlResolved, apiKeyResolved) = await ValidateDokployConfigurationAsync(
             context,
-                _target,
-                "Validating Dokploy configuration").ConfigureAwait(false);
+            _target,
+            "Validating Dokploy configuration").ConfigureAwait(false);
 
         var applicationName = await ResolveProjectNameAsync(_target, environment.Name, ct).ConfigureAwait(false);
         var deploymentEnvironmentName = await ResolveDeploymentEnvironmentNameAsync(_target, ct).ConfigureAwait(false);
 
-        using var client = new DokployApiClient(serverUrlResolved, apiKeyResolved);
+        SetDeploymentState(new DeploymentState
+        {
+            Environment = environment,
+            ServerUrl = serverUrlResolved,
+            ApiKey = apiKeyResolved,
+            ProjectName = applicationName,
+            DeploymentEnvironmentName = deploymentEnvironmentName
+        });
+    }
+
+    private async Task ReconcileProjectAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDeploymentState(environment);
+
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
         DokployOrganization? activeOrganization = null;
         try
         {
@@ -196,8 +379,8 @@ public sealed partial class DokployDeploymentExecutor
         // Find or create the Dokploy project
         var project = await FindOrCreateProjectAsync(
             client,
-            applicationName,
-            deploymentEnvironmentName,
+            state.ProjectName,
+            state.DeploymentEnvironmentName,
             activeOrganization,
             context.Logger,
             ct).ConfigureAwait(false);
@@ -205,20 +388,31 @@ public sealed partial class DokployDeploymentExecutor
         var projectEnvironment = await FindOrCreateEnvironmentAsync(
             client,
             project,
-            deploymentEnvironmentName,
+            state.DeploymentEnvironmentName,
             context.Logger,
             ct).ConfigureAwait(false);
 
-        var environmentId = projectEnvironment.EnvironmentId;
+        state.ActiveOrganization = activeOrganization;
+        state.Project = project;
+        state.ProjectEnvironment = projectEnvironment;
 
         context.Logger.LogInformation("Using Dokploy project '{ProjectName}' (ID: {ProjectId})", project.Name, project.ProjectId);
 
         if (activeOrganization is not null)
         {
-            context.Logger.LogInformation(
-                "Using Dokploy organization '{OrganizationName}' (ID: {OrganizationId})",
-                activeOrganization.Name,
-                activeOrganization.OrganizationId);
+            if (string.IsNullOrWhiteSpace(activeOrganization.OrganizationId))
+            {
+                context.Logger.LogInformation(
+                    "Using Dokploy organization '{OrganizationName}' without an organization ID from the API.",
+                    activeOrganization.Name);
+            }
+            else
+            {
+                context.Logger.LogInformation(
+                    "Using Dokploy organization '{OrganizationName}' (ID: {OrganizationId})",
+                    activeOrganization.Name,
+                    activeOrganization.OrganizationId);
+            }
         }
 
         context.Logger.LogInformation(
@@ -240,72 +434,123 @@ public sealed partial class DokployDeploymentExecutor
             computeResources.Add(dashboardResource);
         }
 
-        DokployAutoRegistry? autoRegistry = null;
-        if (ShouldBootstrapProjectRegistry(this, computeResources))
-        {
-            autoRegistry = await EnsureProjectRegistryAsync(
-                context,
-                client,
-                project,
-                projectEnvironment,
-                serverUrlResolved,
-                apiKeyResolved,
-                ct).ConfigureAwait(false);
+        state.ComputeResources.Clear();
+        state.ComputeResources.AddRange(computeResources);
+        context.Logger.LogInformation(
+            "Identified {Count} compute resource(s) for Dokploy deployment.",
+            state.ComputeResources.Count);
+    }
 
-            await PushApplicationImagesAsync(context, computeResources, autoRegistry, ct).ConfigureAwait(false);
+    private async Task EnsureProjectRegistryAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var state = GetDeploymentState(environment);
+
+        if (!ShouldBootstrapProjectRegistry(this, state.ComputeResources))
+        {
+            context.Logger.LogInformation(
+                "Skipping Dokploy project registry bootstrap because a container registry is already configured.");
+            state.AutoRegistry = null;
+            return;
         }
 
-        // Provision Dokploy-native databases
-        var databaseConnections = await ProvisionNativeDatabasesAsync(context, client, environmentId, ct).ConfigureAwait(false);
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
+        state.AutoRegistry = await EnsureProjectRegistryAsync(
+            context,
+            client,
+            RequireProject(state),
+            RequireProjectEnvironment(state),
+            state.ServerUrl,
+            state.ApiKey,
+            context.CancellationToken).ConfigureAwait(false);
+    }
 
-        // Build the resource → hostname mapping for env var resolution
-        var hostnames = BuildHostnameMapping(context.Model, databaseConnections);
-        var endpointPorts = BuildEndpointPortOverrides(databaseConnections);
+    private async Task PushProjectRegistryImagesAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var state = GetDeploymentState(environment);
+        if (state.AutoRegistry is null)
+        {
+            context.Logger.LogInformation(
+                "Skipping image push because the deployment uses the configured image registry directly.");
+            return;
+        }
 
-        var configuredApplications = new List<(IResource Resource, DokployApplication Application, bool Created, bool Changed)>(computeResources.Count);
+        await PushApplicationImagesAsync(
+            context,
+            state.ComputeResources,
+            state.AutoRegistry,
+            context.CancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ProvisionDatabasesAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var state = GetDeploymentState(environment);
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
+
+        state.DatabaseConnections = await ProvisionNativeDatabasesAsync(
+            context,
+            client,
+            RequireProjectEnvironment(state).EnvironmentId,
+            context.CancellationToken).ConfigureAwait(false);
+
+        state.Hostnames = BuildHostnameMapping(context.Model, state.DatabaseConnections);
+        state.EndpointPorts = BuildEndpointPortOverrides(state.DatabaseConnections);
+    }
+
+    private async Task ConfigureApplicationsAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDeploymentState(environment);
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
+        var project = RequireProject(state);
+        var projectEnvironment = RequireProjectEnvironment(state);
+
+        state.ConfiguredApplications.Clear();
 
         var appTask = await context.ReportingStep.CreateTaskAsync(
-            $"Configuring {computeResources.Count} application(s) in Dokploy", ct).ConfigureAwait(false);
+            $"Configuring {state.ComputeResources.Count} application(s) in Dokploy", ct).ConfigureAwait(false);
 
         await using (appTask.ConfigureAwait(false))
         {
             try
             {
-                foreach (var resource in computeResources)
+                foreach (var resource in state.ComputeResources)
                 {
                     var shell = await EnsureApplicationShellAsync(
                         context,
                         client,
                         resource,
-                        environmentId,
-                        hostnames,
+                        projectEnvironment.EnvironmentId,
+                        state.Hostnames,
                         ct).ConfigureAwait(false);
 
-                    configuredApplications.Add((resource, shell.Application, shell.Created, Changed: shell.Created));
+                    state.ConfiguredApplications.Add(new ConfiguredApplication(resource, shell.Application, shell.Created, shell.Created));
                 }
 
-                for (var i = 0; i < configuredApplications.Count; i++)
+                for (var i = 0; i < state.ConfiguredApplications.Count; i++)
                 {
-                    var (resource, application, created, _) = configuredApplications[i];
+                    var configuredApplication = state.ConfiguredApplications[i];
                     var changed = await ConfigureApplicationAsync(
                         this,
                         context,
                         client,
-                        resource,
-                        application,
+                        configuredApplication.Resource,
+                        configuredApplication.Application,
                         project.Name,
-                        serverUrlResolved,
-                        hostnames,
-                        endpointPorts,
-                        databaseConnections,
-                        autoRegistry,
+                        state.ServerUrl,
+                        state.Hostnames,
+                        state.EndpointPorts,
+                        state.DatabaseConnections,
+                        state.AutoRegistry,
                         ct).ConfigureAwait(false);
 
-                    configuredApplications[i] = (resource, application, created, created || changed);
+                    state.ConfiguredApplications[i] = configuredApplication with
+                    {
+                        Changed = configuredApplication.Created || changed
+                    };
                 }
 
                 await appTask.CompleteAsync(
-                    $"Configured {computeResources.Count} application(s)",
+                    $"Configured {state.ComputeResources.Count} application(s)",
                     CompletionState.Completed, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -316,9 +561,16 @@ public sealed partial class DokployDeploymentExecutor
                 throw;
             }
         }
+    }
+
+    private async Task ReleaseApplicationsAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDeploymentState(environment);
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
 
         var deployTask = await context.ReportingStep.CreateTaskAsync(
-            $"Deploying {configuredApplications.Count} application(s) to Dokploy", ct).ConfigureAwait(false);
+            $"Deploying {state.ConfiguredApplications.Count} application(s) to Dokploy", ct).ConfigureAwait(false);
 
         await using (deployTask.ConfigureAwait(false))
         {
@@ -326,18 +578,27 @@ public sealed partial class DokployDeploymentExecutor
             {
                 var deployedCount = 0;
                 var skippedCount = 0;
-                foreach (var (resource, application, _, changed) in configuredApplications)
+                foreach (var configuredApplication in state.ConfiguredApplications)
                 {
-                    if (await ShouldDeployApplicationAsync(client, application, changed, ct).ConfigureAwait(false))
+                    if (await ShouldDeployApplicationAsync(
+                        client,
+                        configuredApplication.Application,
+                        configuredApplication.Changed,
+                        ct).ConfigureAwait(false))
                     {
-                        await TriggerApplicationDeploymentAsync(context, client, resource, application, ct).ConfigureAwait(false);
+                        await TriggerApplicationDeploymentAsync(
+                            context,
+                            client,
+                            configuredApplication.Resource,
+                            configuredApplication.Application,
+                            ct).ConfigureAwait(false);
                         deployedCount++;
                     }
                     else
                     {
                         context.Logger.LogInformation(
                             "Skipping Dokploy deployment for application '{AppName}' because configuration is unchanged.",
-                            application.AppName);
+                            configuredApplication.Application.AppName);
                         skippedCount++;
                     }
                 }
@@ -356,31 +617,37 @@ public sealed partial class DokployDeploymentExecutor
                 throw;
             }
         }
+    }
 
-        var applicationSummaryEntries = new List<(string ResourceName, string Links)>(configuredApplications.Count);
+    private async Task WriteDeploymentSummaryAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDeploymentState(environment);
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
+        var project = RequireProject(state);
+        var projectEnvironment = RequireProjectEnvironment(state);
 
-        foreach (var (resource, application, _, _) in configuredApplications)
+        var applicationSummaryEntries = new List<(string ResourceName, string Links)>(state.ConfiguredApplications.Count);
+
+        foreach (var configuredApplication in state.ConfiguredApplications)
         {
-            if (GetManagedApplicationDomainEndpoint(resource) is null)
-            {
-                applicationSummaryEntries.Add((resource.Name, "No public endpoints"));
-                continue;
-            }
-
+            var resource = configuredApplication.Resource;
+            var application = configuredApplication.Application;
             var domainHosts = await GetApplicationDomainHostsAsync(client, application.ApplicationId, ct).ConfigureAwait(false);
             var publicLinks = domainHosts
                 .OrderBy(static host => host, StringComparer.OrdinalIgnoreCase)
                 .Select(static host => $"https://{host}")
                 .ToArray();
+            var links = publicLinks.Length > 0
+                ? string.Join(", ", publicLinks)
+                : GetManagedApplicationDomainEndpoint(resource) is null
+                    ? "No public endpoints"
+                    : $"Dokploy app: {application.AppName}";
 
-            applicationSummaryEntries.Add((
-                resource.Name,
-                publicLinks.Length > 0
-                    ? string.Join(", ", publicLinks)
-                    : $"Dokploy app: {application.AppName}"));
+            applicationSummaryEntries.Add((resource.Name, links));
         }
 
-        var databaseSummaryEntries = databaseConnections
+        var databaseSummaryEntries = state.DatabaseConnections
             .OrderBy(static entry => entry.Key.Name, StringComparer.OrdinalIgnoreCase)
             .Select(static entry => (
                 ResourceName: entry.Key.Name,
@@ -391,10 +658,10 @@ public sealed partial class DokployDeploymentExecutor
 
         // Summary
         context.Summary.Add("🚀 Target", "Dokploy");
-        context.Summary.Add("🌐 Server", serverUrlResolved);
-        if (activeOrganization is not null)
+        context.Summary.Add("🌐 Server", state.ServerUrl);
+        if (state.ActiveOrganization is not null)
         {
-            context.Summary.Add("🏢 Organization", activeOrganization.Name);
+            context.Summary.Add("🏢 Organization", state.ActiveOrganization.Name);
         }
         context.Summary.Add("📦 Project", project.Name);
         context.Summary.Add("🧭 Environment", projectEnvironment.Name);
@@ -402,9 +669,9 @@ public sealed partial class DokployDeploymentExecutor
         {
             context.Summary.Add(entry.ResourceName, entry.Links);
         }
-        if (autoRegistry is not null)
+        if (state.AutoRegistry is not null)
         {
-            context.Summary.Add("📚 Registry", autoRegistry.RegistryHost);
+            context.Summary.Add("📚 Registry", state.AutoRegistry.RegistryHost);
         }
         if (databaseSummaryEntries.Length > 0)
         {
@@ -413,6 +680,8 @@ public sealed partial class DokployDeploymentExecutor
                 context.Summary.Add($"🗃️ {entry.ResourceName}", entry.Endpoint);
             }
         }
+
+        s_deploymentStates.Remove(_target);
     }
 
     /// <summary>
@@ -420,6 +689,17 @@ public sealed partial class DokployDeploymentExecutor
     /// The project shell is removed only when no Dokploy services remain after cleanup.
     /// </summary>
     private async Task DestroyDokployAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        await ValidateDestroyAsync(context, environment).ConfigureAwait(false);
+        await DiscoverDestroyTargetAsync(context, environment).ConfigureAwait(false);
+        await DestroyApplicationResourcesAsync(context, environment).ConfigureAwait(false);
+        await DestroyDatabaseResourcesAsync(context, environment).ConfigureAwait(false);
+        await DestroyRegistryResourcesAsync(context, environment).ConfigureAwait(false);
+        await RemoveEmptyProjectAsync(context, environment).ConfigureAwait(false);
+        await WriteDestroySummaryAsync(context, environment).ConfigureAwait(false);
+    }
+
+    private async Task ValidateDestroyAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
     {
         var ct = context.CancellationToken;
 
@@ -437,7 +717,22 @@ public sealed partial class DokployDeploymentExecutor
         var projectName = await ResolveProjectNameAsync(_target, environment.Name, ct).ConfigureAwait(false);
         var deploymentEnvironmentName = await ResolveDeploymentEnvironmentNameAsync(_target, ct).ConfigureAwait(false);
 
-        using var client = new DokployApiClient(serverUrlResolved, apiKeyResolved);
+        SetDestroyState(new DestroyState
+        {
+            Environment = environment,
+            ServerUrl = serverUrlResolved,
+            ApiKey = apiKeyResolved,
+            ProjectName = projectName,
+            DeploymentEnvironmentName = deploymentEnvironmentName
+        });
+    }
+
+    private async Task DiscoverDestroyTargetAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDestroyState(environment);
+
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
         DokployOrganization? activeOrganization = null;
         try
         {
@@ -448,99 +743,219 @@ public sealed partial class DokployDeploymentExecutor
             context.Logger.LogDebug(ex, "Could not resolve active Dokploy organization.");
         }
 
-        var project = await FindProjectAsync(client, projectName, activeOrganization, context.Logger, ct).ConfigureAwait(false);
+        state.ActiveOrganization = activeOrganization;
+
+        var project = await FindProjectAsync(client, state.ProjectName, activeOrganization, context.Logger, ct).ConfigureAwait(false);
         if (project is null)
         {
-            context.Logger.LogInformation("Dokploy project '{ProjectName}' does not exist. Nothing to destroy.", projectName);
-            context.Summary.Add("🚀 Target", "Dokploy");
-            context.Summary.Add("🌐 Server", serverUrlResolved);
-            context.Summary.Add("📦 Project", projectName);
-            context.Summary.Add("Destroy", "Project not found");
+            context.Logger.LogInformation("Dokploy project '{ProjectName}' does not exist. Nothing to destroy.", state.ProjectName);
             return;
         }
 
-        var projectEnvironment = FindProjectEnvironment(project, deploymentEnvironmentName);
+        state.Project = project;
+        var projectEnvironment = FindProjectEnvironment(project, state.DeploymentEnvironmentName);
         if (projectEnvironment is null)
         {
             context.Logger.LogInformation(
                 "Dokploy environment '{EnvironmentName}' does not exist in project '{ProjectName}'.",
-                deploymentEnvironmentName,
+                state.DeploymentEnvironmentName,
                 project.Name);
-
-            var projectRemoved = await TryRemoveEmptyProjectAsync(client, project, context.Logger, ct).ConfigureAwait(false);
-            context.Summary.Add("🚀 Target", "Dokploy");
-            context.Summary.Add("🌐 Server", serverUrlResolved);
-            context.Summary.Add("📦 Project", project.Name);
-            context.Summary.Add("🧭 Environment", deploymentEnvironmentName);
-            context.Summary.Add("Destroy", projectRemoved ? "Project removed" : "Environment not found");
             return;
         }
 
-        var computeResources = GetDestroyComputeResources(context.Model, environment);
-        var destroyedResources = new List<string>();
+        state.ProjectEnvironment = projectEnvironment;
+        state.ComputeResources = GetDestroyComputeResources(context.Model, environment);
+        context.Logger.LogInformation(
+            "Identified {Count} compute resource(s) for Dokploy destroy.",
+            state.ComputeResources.Count);
+    }
+
+    private async Task DestroyApplicationResourcesAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDestroyState(environment);
+        if (state.ProjectEnvironment is null)
+        {
+            context.Logger.LogInformation("Skipping Dokploy application destroy because the target environment was not found.");
+            return;
+        }
+
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
 
         var destroyTask = await context.ReportingStep.CreateTaskAsync(
-            $"Destroying Dokploy resources for project '{project.Name}'", ct).ConfigureAwait(false);
+            $"Destroying Dokploy application resources for project '{RequireProject(state).Name}'", ct).ConfigureAwait(false);
 
         await using (destroyTask.ConfigureAwait(false))
         {
             try
             {
-                foreach (var resource in computeResources)
+                var destroyedCount = 0;
+                foreach (var resource in state.ComputeResources)
                 {
-                    destroyedResources.AddRange(await DestroyApplicationsAsync(
+                    var destroyedApplications = await DestroyApplicationsAsync(
                         client,
                         resource,
-                        projectEnvironment.EnvironmentId,
+                        state.ProjectEnvironment.EnvironmentId,
                         context.Logger,
-                        ct).ConfigureAwait(false));
-                }
-
-                destroyedResources.AddRange(await DestroyNativeDatabasesAsync(
-                    context,
-                    client,
-                    projectEnvironment.EnvironmentId,
-                    ct).ConfigureAwait(false));
-
-                if (ShouldBootstrapProjectRegistry(this, computeResources))
-                {
-                    destroyedResources.AddRange(await DestroyProjectRegistryAsync(
-                        client,
-                        project,
-                        projectEnvironment,
-                        serverUrlResolved,
-                        context.Logger,
-                        ct).ConfigureAwait(false));
+                        ct).ConfigureAwait(false);
+                    state.DestroyedResources.AddRange(destroyedApplications);
+                    destroyedCount += destroyedApplications.Count;
                 }
 
                 await destroyTask.CompleteAsync(
-                    $"Destroyed {destroyedResources.Count} Dokploy resource(s)",
+                    $"Destroyed {destroyedCount} Dokploy application resource(s)",
                     CompletionState.Completed,
                     ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 await destroyTask.CompleteAsync(
-                    $"Dokploy destroy failed: {ex.Message}",
+                    $"Dokploy application destroy failed: {ex.Message}",
                     CompletionState.CompletedWithError,
                     ct).ConfigureAwait(false);
                 throw;
             }
         }
+    }
 
-        var removedProject = await TryRemoveEmptyProjectAsync(client, project, context.Logger, ct).ConfigureAwait(false);
+    private async Task DestroyDatabaseResourcesAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDestroyState(environment);
+        if (state.ProjectEnvironment is null)
+        {
+            context.Logger.LogInformation("Skipping Dokploy database destroy because the target environment was not found.");
+            return;
+        }
+
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
+        state.DestroyedResources.AddRange(await DestroyNativeDatabasesAsync(
+            context,
+            client,
+            state.ProjectEnvironment.EnvironmentId,
+            ct).ConfigureAwait(false));
+    }
+
+    private async Task DestroyRegistryResourcesAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var ct = context.CancellationToken;
+        var state = GetDestroyState(environment);
+        if (state.ProjectEnvironment is null)
+        {
+            context.Logger.LogInformation("Skipping Dokploy registry destroy because the target environment was not found.");
+            return;
+        }
+
+        if (!ShouldBootstrapProjectRegistry(this, state.ComputeResources))
+        {
+            context.Logger.LogInformation(
+                "Skipping Dokploy project registry destroy because a container registry is configured externally.");
+            return;
+        }
+
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
+        state.DestroyedResources.AddRange(await DestroyProjectRegistryAsync(
+            client,
+            RequireProject(state),
+            state.ProjectEnvironment,
+            state.ServerUrl,
+            context.Logger,
+            ct).ConfigureAwait(false));
+    }
+
+    private async Task RemoveEmptyProjectAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var state = GetDestroyState(environment);
+        if (state.Project is null)
+        {
+            return;
+        }
+
+        using var client = new DokployApiClient(state.ServerUrl, state.ApiKey);
+        state.ProjectRemoved = await TryRemoveEmptyProjectAsync(
+            client,
+            state.Project,
+            context.Logger,
+            context.CancellationToken).ConfigureAwait(false);
+    }
+
+    private Task WriteDestroySummaryAsync(PipelineStepContext context, DockerComposeEnvironmentResource environment)
+    {
+        var state = GetDestroyState(environment);
 
         context.Summary.Add("🚀 Target", "Dokploy");
-        context.Summary.Add("🌐 Server", serverUrlResolved);
-        if (activeOrganization is not null)
+        context.Summary.Add("🌐 Server", state.ServerUrl);
+        if (state.ActiveOrganization is not null)
         {
-            context.Summary.Add("🏢 Organization", activeOrganization.Name);
+            context.Summary.Add("🏢 Organization", state.ActiveOrganization.Name);
         }
-        context.Summary.Add("📦 Project", project.Name);
-        context.Summary.Add("🧭 Environment", projectEnvironment.Name);
-        context.Summary.Add("Destroyed resources", destroyedResources.Count.ToString(CultureInfo.InvariantCulture));
-        context.Summary.Add("Project", removedProject ? "Removed" : "Kept because other services remain or removal was not allowed");
+        context.Summary.Add("📦 Project", state.Project?.Name ?? state.ProjectName);
+        context.Summary.Add("🧭 Environment", state.ProjectEnvironment?.Name ?? state.DeploymentEnvironmentName);
+        if (state.Project is null)
+        {
+            context.Summary.Add("Destroy", "Project not found");
+        }
+        else if (state.ProjectEnvironment is null)
+        {
+            context.Summary.Add("Destroy", state.ProjectRemoved ? "Project removed" : "Environment not found");
+        }
+        else
+        {
+            context.Summary.Add("Destroyed resources", state.DestroyedResources.Count.ToString(CultureInfo.InvariantCulture));
+            context.Summary.Add("Project", state.ProjectRemoved ? "Removed" : "Kept because other services remain or removal was not allowed");
+        }
+
+        s_destroyStates.Remove(_target);
+        return Task.CompletedTask;
     }
+
+    private void SetDeploymentState(DeploymentState state)
+    {
+        s_deploymentStates.Remove(_target);
+        s_deploymentStates.Add(_target, state);
+    }
+
+    private DeploymentState GetDeploymentState(DockerComposeEnvironmentResource environment)
+    {
+        if (!s_deploymentStates.TryGetValue(_target, out var state)
+            || !string.Equals(state.Environment.Name, environment.Name, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Dokploy deployment state is not initialized. Run the 'dokploy-validate-{environment.Name}' pipeline step before continuing deployment.");
+        }
+
+        return state;
+    }
+
+    private void SetDestroyState(DestroyState state)
+    {
+        s_destroyStates.Remove(_target);
+        s_destroyStates.Add(_target, state);
+    }
+
+    private DestroyState GetDestroyState(DockerComposeEnvironmentResource environment)
+    {
+        if (!s_destroyStates.TryGetValue(_target, out var state)
+            || !string.Equals(state.Environment.Name, environment.Name, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Dokploy destroy state is not initialized. Run the 'dokploy-destroy-validate-{environment.Name}' pipeline step before continuing destroy.");
+        }
+
+        return state;
+    }
+
+    private static DokployProject RequireProject(DeploymentState state)
+        => state.Project ?? throw new InvalidOperationException(
+            $"Dokploy project '{state.ProjectName}' has not been resolved yet.");
+
+    private static DokployProjectEnvironment RequireProjectEnvironment(DeploymentState state)
+        => state.ProjectEnvironment ?? throw new InvalidOperationException(
+            $"Dokploy environment '{state.DeploymentEnvironmentName}' has not been resolved yet.");
+
+    private static DokployProject RequireProject(DestroyState state)
+        => state.Project ?? throw new InvalidOperationException(
+            $"Dokploy project '{state.ProjectName}' has not been resolved yet.");
 
     private static async Task<(string ServerUrl, string ApiKey)> ValidateDokployConfigurationAsync(
         PipelineStepContext context,
@@ -908,10 +1323,20 @@ public sealed partial class DokployDeploymentExecutor
         ILogger logger,
         CancellationToken ct)
     {
+        var existingHosts = await GetApplicationDomainHostsAsync(client, application.ApplicationId, ct).ConfigureAwait(false);
+        if (existingHosts.Count > 0)
+        {
+            logger.LogInformation(
+                "Reusing existing application domain(s) for '{AppName}': {Hosts}",
+                application.AppName,
+                string.Join(", ", existingHosts.OrderBy(static host => host, StringComparer.OrdinalIgnoreCase)));
+            return false;
+        }
+
         var endpoint = GetManagedApplicationDomainEndpoint(resource);
         if (endpoint is null)
         {
-            return await RemoveApplicationDomainsAsync(client, application.ApplicationId, logger, ct).ConfigureAwait(false) > 0;
+            return false;
         }
 
         var projectSlug = SanitizeName(projectName);
@@ -920,12 +1345,6 @@ public sealed partial class DokployDeploymentExecutor
         var applicationHost = await CanResolveDnsAsync(preferredHost, ct).ConfigureAwait(false)
             ? preferredHost
             : await TryDeriveSslipApplicationHostAsync(serverUrl, projectSlug, resourceSlug, ct).ConfigureAwait(false) ?? preferredHost;
-
-        var existingHosts = await GetApplicationDomainHostsAsync(client, application.ApplicationId, ct).ConfigureAwait(false);
-        if (existingHosts.Contains(applicationHost, StringComparer.OrdinalIgnoreCase))
-        {
-            return false;
-        }
 
         var targetPort = GetEndpointPort(resource, endpoint.Name, endpointPorts);
         await client.CreateDomainAsync(
@@ -1202,12 +1621,15 @@ public sealed partial class DokployDeploymentExecutor
             destroyed.Add($"compose:{compose.Name}");
         }
 
-        var registryHost = await TryDeriveSslipRegistryHostAsync(serverUrl, projectSlug, ct).ConfigureAwait(false);
+        var registryHost = await TryDeriveSslipRegistryHostAsync(serverUrl, projectSlug, project.ProjectId, ct).ConfigureAwait(false);
+        var legacyRegistryHost = await TryDeriveSslipRegistryHostAsync(serverUrl, projectSlug, ct).ConfigureAwait(false);
+        var registryHosts = new[] { registryHost, legacyRegistryHost }
+            .Where(static host => !string.IsNullOrWhiteSpace(host))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var registries = await client.ListRegistriesAsync(ct).ConfigureAwait(false);
         foreach (var registry in registries.Where(registry =>
             string.Equals(registry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase)
-            || (!string.IsNullOrWhiteSpace(registryHost)
-                && string.Equals(registry.RegistryUrl, registryHost, StringComparison.OrdinalIgnoreCase))))
+            || registryHosts.Contains(registry.RegistryUrl)))
         {
             if (string.IsNullOrWhiteSpace(registry.RegistryId))
             {
@@ -1344,6 +1766,11 @@ public sealed partial class DokployDeploymentExecutor
             case JsonValueKind.Object:
                 string? domainId = null;
                 string? host = null;
+                bool? https = null;
+                int? port = null;
+                string? serviceName = null;
+                string? domainType = null;
+                string? certificateType = null;
 
                 foreach (var property in element.EnumerateObject())
                 {
@@ -1357,6 +1784,32 @@ public sealed partial class DokployDeploymentExecutor
                     {
                         host = property.Value.GetString();
                     }
+                    else if (string.Equals(property.Name, "https", StringComparison.OrdinalIgnoreCase)
+                        && (property.Value.ValueKind == JsonValueKind.True || property.Value.ValueKind == JsonValueKind.False))
+                    {
+                        https = property.Value.GetBoolean();
+                    }
+                    else if (string.Equals(property.Name, "port", StringComparison.OrdinalIgnoreCase)
+                        && property.Value.ValueKind == JsonValueKind.Number
+                        && property.Value.TryGetInt32(out var portValue))
+                    {
+                        port = portValue;
+                    }
+                    else if (string.Equals(property.Name, "serviceName", StringComparison.OrdinalIgnoreCase)
+                        && property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        serviceName = property.Value.GetString();
+                    }
+                    else if (string.Equals(property.Name, "domainType", StringComparison.OrdinalIgnoreCase)
+                        && property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        domainType = property.Value.GetString();
+                    }
+                    else if (string.Equals(property.Name, "certificateType", StringComparison.OrdinalIgnoreCase)
+                        && property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        certificateType = property.Value.GetString();
+                    }
                 }
 
                 if (!string.IsNullOrWhiteSpace(domainId) && !string.IsNullOrWhiteSpace(host))
@@ -1364,7 +1817,12 @@ public sealed partial class DokployDeploymentExecutor
                     domains[domainId] = new DokployDomain
                     {
                         DomainId = domainId,
-                        Host = host
+                        Host = host,
+                        Https = https,
+                        Port = port,
+                        ServiceName = serviceName,
+                        DomainType = domainType,
+                        CertificateType = certificateType
                     };
                 }
 
@@ -1450,7 +1908,178 @@ public sealed partial class DokployDeploymentExecutor
         var projectSlug = SanitizeName(project.Name);
         var registryName = $"{projectSlug}-registry";
         var composeName = $"{projectSlug}-registry";
-        var registryHost = await TryDeriveSslipRegistryHostAsync(serverUrl, projectSlug, ct).ConfigureAwait(false)
+        var existingCompose = ReuseLatest(
+            await client.SearchComposesAsync(composeName, projectEnvironment.EnvironmentId, ct).ConfigureAwait(false),
+            projectEnvironment.EnvironmentId,
+            composeName,
+            compose => compose.Name,
+            compose => compose.EnvironmentId,
+            compose => compose.CreatedAt,
+            context.Logger,
+            "compose service");
+        var existingComposeDomainHosts = existingCompose is null
+            ? []
+            : await TryGetComposeDomainHostsAsync(client, existingCompose.ComposeId, context.Logger, ct).ConfigureAwait(false);
+        var registries = await client.ListRegistriesAsync(ct).ConfigureAwait(false);
+        var existingComposeDomainHost = GetPreferredDomainHost(existingComposeDomainHosts);
+        var existingRegistry = FindExistingRegistry(registries, registryName, existingComposeDomainHost);
+        var existingRegistryHost = NormalizeRegistryHost(existingRegistry?.RegistryUrl);
+        var existingDomainHost = existingRegistryHost is not null
+            && existingComposeDomainHosts.Contains(existingRegistryHost, StringComparer.OrdinalIgnoreCase)
+                ? existingRegistryHost
+                : existingComposeDomainHost;
+
+        if (existingRegistry is not null && (existingDomainHost is not null || existingRegistryHost is not null))
+        {
+            var reusedRegistryHost = existingDomainHost ?? existingRegistryHost!;
+            var registryReuseTask = await context.ReportingStep.CreateTaskAsync(
+                $"Reusing project registry '{reusedRegistryHost}'", ct).ConfigureAwait(false);
+            await using (registryReuseTask.ConfigureAwait(false))
+            {
+                var registryUsername = string.IsNullOrWhiteSpace(existingRegistry.Username)
+                    ? projectSlug
+                    : existingRegistry.Username;
+                var registryPassword = string.IsNullOrWhiteSpace(existingRegistry.Password)
+                    ? GenerateRegistryPassword(project.ProjectId, reusedRegistryHost, apiKey)
+                    : existingRegistry.Password;
+                var imagePrefix = string.IsNullOrWhiteSpace(existingRegistry.ImagePrefix)
+                    ? projectSlug
+                    : existingRegistry.ImagePrefix;
+                var registryRecordChanged =
+                    !string.Equals(NormalizeRegistryHost(existingRegistry.RegistryUrl), reusedRegistryHost, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(existingRegistry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(existingRegistry.ImagePrefix, imagePrefix, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(existingRegistry.Username ?? registryUsername, registryUsername, StringComparison.Ordinal)
+                    || !string.Equals(existingRegistry.Password ?? registryPassword, registryPassword, StringComparison.Ordinal);
+
+                context.Logger.LogInformation(
+                    "Reusing existing Dokploy registry '{RegistryName}' (ID: {RegistryId}) at '{RegistryHost}'.",
+                    existingRegistry.RegistryName,
+                    existingRegistry.RegistryId,
+                    reusedRegistryHost);
+
+                if (existingCompose is not null
+                    && existingComposeDomainHosts.Contains(reusedRegistryHost, StringComparer.OrdinalIgnoreCase)
+                    && await EnsureRegistryComposeDomainAsync(client, existingCompose.ComposeId, reusedRegistryHost, context.Logger, ct).ConfigureAwait(false))
+                {
+                    await DeployRegistryComposeAsync(
+                        client,
+                        existingCompose.ComposeId,
+                        composeName,
+                        context.Logger,
+                        ct).ConfigureAwait(false);
+                    context.Logger.LogInformation(
+                        "Redeployed existing Dokploy registry compose service '{ComposeName}' after updating its HTTPS domain.",
+                        composeName);
+                }
+
+                var registryProbe = await ProbeRegistryCredentialsOnceAsync(
+                    reusedRegistryHost,
+                    registryUsername,
+                    registryPassword,
+                    ct).ConfigureAwait(false);
+                var registryCredentialsChanged = registryRecordChanged;
+
+                if (!registryProbe.IsReady)
+                {
+                    if (existingCompose is null)
+                    {
+                        var message =
+                            $"Existing Dokploy registry '{existingRegistry.RegistryName}' at '{reusedRegistryHost}' did not accept the stored credentials and no managed compose service '{composeName}' was found to repair it. Last probe result: {registryProbe.Details}";
+                        await registryReuseTask.CompleteAsync(message, CompletionState.CompletedWithError, ct).ConfigureAwait(false);
+                        throw new InvalidOperationException(message);
+                    }
+
+                    if (!existingComposeDomainHosts.Contains(reusedRegistryHost, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var knownDomains = existingComposeDomainHosts.Count == 0
+                            ? "none"
+                            : string.Join(", ", existingComposeDomainHosts);
+                        var message =
+                            $"Existing Dokploy registry '{existingRegistry.RegistryName}' points at '{reusedRegistryHost}', but managed compose service '{composeName}' has no matching domain. Known compose domain(s): {knownDomains}.";
+                        await registryReuseTask.CompleteAsync(message, CompletionState.CompletedWithError, ct).ConfigureAwait(false);
+                        throw new InvalidOperationException(message);
+                    }
+
+                    context.Logger.LogWarning(
+                        "Existing Dokploy registry '{RegistryName}' did not accept its stored credentials at '{RegistryHost}': {Details}",
+                        existingRegistry.RegistryName,
+                        reusedRegistryHost,
+                        registryProbe.Details);
+
+                    var repairHtpasswdLine = $"{registryUsername}:{BCrypt.Net.BCrypt.HashPassword(registryPassword)}";
+                    var repairHtpasswdPayload = Convert.ToBase64String(Encoding.UTF8.GetBytes(repairHtpasswdLine));
+                    var repairCredentialFingerprint = CreateRegistryCredentialFingerprint(registryUsername, registryPassword);
+                    var repairComposeFile = BuildRegistryComposeFile(repairHtpasswdPayload, repairCredentialFingerprint);
+                    var composeMatches = await RegistryComposeMatchesAsync(client, existingCompose.ComposeId, repairComposeFile, ct).ConfigureAwait(false);
+                    if (!composeMatches)
+                    {
+                        await client.UpdateComposeAsync(
+                            existingCompose.ComposeId,
+                            repairComposeFile,
+                            ct: ct).ConfigureAwait(false);
+                        context.Logger.LogInformation(
+                            "Updated existing Dokploy registry compose service '{ComposeName}' so it uses the registry resource credentials.",
+                            composeName);
+                    }
+
+                    await DeployRegistryComposeAsync(
+                        client,
+                        existingCompose.ComposeId,
+                        composeName,
+                        context.Logger,
+                        ct).ConfigureAwait(false);
+                    registryCredentialsChanged = true;
+                    context.Logger.LogInformation(
+                        "Redeployed existing Dokploy registry compose service '{ComposeName}' to repair registry credentials without creating a new registry or domain.",
+                        composeName);
+
+                    await WaitForRegistryCredentialsAsync(
+                        reusedRegistryHost,
+                        registryUsername,
+                        registryPassword,
+                        ct).ConfigureAwait(false);
+                }
+
+                if (registryRecordChanged && !string.IsNullOrWhiteSpace(existingRegistry.RegistryId))
+                {
+                    await client.UpdateRegistryAsync(
+                        existingRegistry.RegistryId,
+                        registryName,
+                        registryUsername,
+                        registryPassword,
+                        reusedRegistryHost,
+                        imagePrefix: imagePrefix,
+                        ct: ct).ConfigureAwait(false);
+                    context.Logger.LogInformation(
+                        "Updated existing Dokploy registry '{RegistryName}' (ID: {RegistryId}) after the registry endpoint accepted the configured credentials.",
+                        existingRegistry.RegistryName,
+                        existingRegistry.RegistryId);
+                }
+
+                await registryReuseTask.CompleteAsync(
+                    $"Registry ready at https://{reusedRegistryHost}",
+                    CompletionState.Completed,
+                    ct).ConfigureAwait(false);
+
+                return new DokployAutoRegistry(
+                    existingRegistry.RegistryName,
+                    composeName,
+                    reusedRegistryHost,
+                    reusedRegistryHost,
+                    imagePrefix,
+                    registryUsername,
+                    registryPassword,
+                    "",
+                    existingRegistry.RegistryId,
+                    existingCompose?.ComposeId ?? "",
+                    registryCredentialsChanged);
+            }
+        }
+
+        var registryHost = existingDomainHost
+            ?? existingRegistryHost
+            ?? await TryDeriveSslipRegistryHostAsync(serverUrl, projectSlug, project.ProjectId, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
                 $"Could not derive an sslip.io registry host for Dokploy project '{project.Name}' from server '{serverUrl}'.");
         var username = projectSlug;
@@ -1466,15 +2095,20 @@ public sealed partial class DokployDeploymentExecutor
         {
             try
             {
-                var existingCompose = ReuseLatest(
-                    await client.SearchComposesAsync(composeName, projectEnvironment.EnvironmentId, ct).ConfigureAwait(false),
-                    projectEnvironment.EnvironmentId,
-                    composeName,
-                    compose => compose.Name,
-                    compose => compose.EnvironmentId,
-                    compose => compose.CreatedAt,
-                    context.Logger,
-                    "compose service");
+                if (existingDomainHost is not null)
+                {
+                    context.Logger.LogInformation(
+                        "Reusing existing Dokploy registry domain '{RegistryHost}' for compose '{ComposeName}'.",
+                        registryHost,
+                        composeName);
+                }
+                else if (existingRegistryHost is not null)
+                {
+                    context.Logger.LogInformation(
+                        "Reusing existing Dokploy registry URL '{RegistryHost}' for registry '{RegistryName}'.",
+                        registryHost,
+                        registryName);
+                }
 
                 var composeCreated = existingCompose is null;
                 var compose = existingCompose ?? await client.CreateComposeAsync(
@@ -1492,7 +2126,13 @@ public sealed partial class DokployDeploymentExecutor
                     context.Logger.LogInformation("Reusing Dokploy compose service '{ComposeName}' (ID: {ComposeId})", composeName, compose.ComposeId);
                 }
 
-                var hasRegistryDomain = await ComposeHasDomainAsync(client, compose.ComposeId, registryHost, ct).ConfigureAwait(false);
+                var registryDomainChanged = await EnsureRegistryComposeDomainAsync(
+                    client,
+                    compose.ComposeId,
+                    registryHost,
+                    context.Logger,
+                    ct).ConfigureAwait(false);
+                var hasRegistryDomain = true;
                 var registryProbe = existingCompose is not null && hasRegistryDomain
                     ? await ProbeRegistryCredentialsOnceAsync(registryHost, username, password, ct).ConfigureAwait(false)
                     : new RegistryProbeResult(false, "registry compose service or domain is not fully configured yet.");
@@ -1507,6 +2147,7 @@ public sealed partial class DokployDeploymentExecutor
                         compose.ComposeId,
                         composeFile,
                         ct: ct).ConfigureAwait(false);
+
                     context.Logger.LogInformation(
                         "Updated Dokploy registry compose service '{ComposeName}' because its configuration changed.",
                         composeName);
@@ -1518,9 +2159,14 @@ public sealed partial class DokployDeploymentExecutor
                         composeName);
                 }
 
-                if (composeChanged || !registryProbe.IsReady)
+                if (composeChanged || registryDomainChanged || !registryProbe.IsReady)
                 {
-                    await client.DeployComposeAsync(compose.ComposeId, ct).ConfigureAwait(false);
+                    await DeployRegistryComposeAsync(
+                        client,
+                        compose.ComposeId,
+                        composeName,
+                        context.Logger,
+                        ct).ConfigureAwait(false);
                     deployedCompose = true;
                 }
                 else
@@ -1530,45 +2176,10 @@ public sealed partial class DokployDeploymentExecutor
                         registryHost);
                 }
 
-                if (!hasRegistryDomain)
-                {
-                    try
-                    {
-                        await client.CreateComposeDomainAsync(
-                            compose.ComposeId,
-                            "registry",
-                            registryHost,
-                            5000,
-                            https: true,
-                            certificateType: "letsencrypt",
-                            ct: ct).ConfigureAwait(false);
-                        context.Logger.LogInformation(
-                            "Requested Dokploy registry domain '{RegistryHost}' for compose '{ComposeName}'",
-                            registryHost,
-                            composeName);
-
-                        await client.DeployComposeAsync(compose.ComposeId, ct).ConfigureAwait(false);
-                        deployedCompose = true;
-                        context.Logger.LogInformation(
-                            "Redeployed compose '{ComposeName}' after adding registry domain '{RegistryHost}' so Traefik picks up the new route.",
-                            composeName,
-                            registryHost);
-                    }
-                    catch (Exception ex)
-                    {
-                        context.Logger.LogWarning(
-                            ex,
-                            "Failed to provision registry domain '{RegistryHost}'.",
-                            registryHost);
-                    }
-                }
-                else
-                {
-                    context.Logger.LogInformation(
-                        "Reusing sslip.io registry host '{RegistryHost}' for compose '{ComposeName}'.",
-                        registryHost,
-                        composeName);
-                }
+                context.Logger.LogInformation(
+                    "Reusing sslip.io registry host '{RegistryHost}' for compose '{ComposeName}'.",
+                    registryHost,
+                    composeName);
 
                 var registryUrl = registryHost;
 
@@ -1581,9 +2192,8 @@ public sealed partial class DokployDeploymentExecutor
                         ct).ConfigureAwait(false);
                 }
 
-                var registries = await client.ListRegistriesAsync(ct).ConfigureAwait(false);
-                var existingRegistry = registries.FirstOrDefault(registry =>
-                    string.Equals(registry.RegistryUrl, registryUrl, StringComparison.OrdinalIgnoreCase)
+                existingRegistry ??= registries.FirstOrDefault(registry =>
+                    string.Equals(NormalizeRegistryHost(registry.RegistryUrl), registryHost, StringComparison.OrdinalIgnoreCase)
                     || string.Equals(registry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase));
 
                 if (existingRegistry is null)
@@ -1598,7 +2208,7 @@ public sealed partial class DokployDeploymentExecutor
 
                     registries = await client.ListRegistriesAsync(ct).ConfigureAwait(false);
                     existingRegistry = registries.FirstOrDefault(registry =>
-                        string.Equals(registry.RegistryUrl, registryUrl, StringComparison.OrdinalIgnoreCase)
+                        string.Equals(NormalizeRegistryHost(registry.RegistryUrl), registryHost, StringComparison.OrdinalIgnoreCase)
                         || string.Equals(registry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase));
                     composeChanged = true;
                 }
@@ -1607,7 +2217,7 @@ public sealed partial class DokployDeploymentExecutor
                     var desiredImagePrefix = projectSlug;
                     var registryMatches =
                         string.Equals(existingRegistry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(existingRegistry.RegistryUrl, registryUrl, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(NormalizeRegistryHost(existingRegistry.RegistryUrl), registryHost, StringComparison.OrdinalIgnoreCase)
                         && string.Equals(existingRegistry.ImagePrefix, desiredImagePrefix, StringComparison.OrdinalIgnoreCase)
                         && string.Equals(existingRegistry.Username ?? username, username, StringComparison.Ordinal)
                         && string.Equals(existingRegistry.Password ?? password, password, StringComparison.Ordinal);
@@ -2015,15 +2625,118 @@ public sealed partial class DokployDeploymentExecutor
         builder.AppendLine("      REGISTRY_AUTH_HTPASSWD_REALM: \"Dokploy Registry\"");
         builder.AppendLine("      REGISTRY_AUTH_HTPASSWD_PATH: \"/auth/htpasswd\"");
         builder.AppendLine($"      SORVIA_REGISTRY_CREDENTIAL_FINGERPRINT: \"{credentialFingerprint}\"");
-        builder.AppendLine("    command:");
+        builder.AppendLine("    entrypoint:");
         builder.AppendLine("      - \"/bin/sh\"");
         builder.AppendLine("      - \"-c\"");
-        builder.AppendLine($"      - \"mkdir -p /auth && printf '%s' '{htpasswdPayload}' | base64 -d > /auth/htpasswd && exec /entrypoint.sh /etc/docker/registry/config.yml\"");
+        builder.AppendLine($"      - \"mkdir -p /auth && printf '%s' '{htpasswdPayload}' | base64 -d > /auth/htpasswd && exec /entrypoint.sh serve /etc/docker/registry/config.yml\"");
         builder.AppendLine("    volumes:");
         builder.AppendLine("      - \"registry-data:/var/lib/registry\"");
         builder.AppendLine("volumes:");
         builder.AppendLine("  registry-data: {}");
         return builder.ToString();
+    }
+
+    private static async Task DeployRegistryComposeAsync(
+        DokployApiClient client,
+        string composeId,
+        string composeName,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var deploymentTitle = $"Sorvia registry deployment {DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}";
+        var deploymentDescription = $"Deploy private registry compose service '{composeName}' generated by Sorvia.Aspire.Hosting.Dokploy.";
+
+        await client.DeployComposeAsync(
+            composeId,
+            deploymentTitle,
+            deploymentDescription,
+            ct).ConfigureAwait(false);
+        logger.LogInformation(
+            "Queued Dokploy registry compose deployment '{DeploymentTitle}' for compose service '{ComposeName}' (ID: {ComposeId}).",
+            deploymentTitle,
+            composeName,
+            composeId);
+
+        await WaitForComposeDeploymentAsync(
+            client,
+            composeId,
+            composeName,
+            deploymentTitle,
+            logger,
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task WaitForComposeDeploymentAsync(
+        DokployApiClient client,
+        string composeId,
+        string composeName,
+        string deploymentTitle,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(s_composeDeploymentTimeout);
+
+        string? lastStatus = null;
+        string? lastDeploymentId = null;
+        var deploymentObserved = false;
+
+        try
+        {
+            while (!timeoutCts.Token.IsCancellationRequested)
+            {
+                var deployments = await client.GetComposeDeploymentsAsync(composeId, timeoutCts.Token).ConfigureAwait(false);
+                var deployment = deployments
+                    .Where(deployment => string.Equals(deployment.Title, deploymentTitle, StringComparison.Ordinal))
+                    .OrderByDescending(deployment => deployment.CreatedAt ?? DateTimeOffset.MinValue)
+                    .FirstOrDefault();
+
+                if (deployment is not null)
+                {
+                    deploymentObserved = true;
+                    lastDeploymentId = deployment.DeploymentId;
+                    lastStatus = string.IsNullOrWhiteSpace(deployment.Status) ? "unknown" : deployment.Status;
+
+                    if (string.Equals(deployment.Status, "done", StringComparison.OrdinalIgnoreCase))
+                    {
+                        logger.LogInformation(
+                            "Dokploy registry compose deployment '{DeploymentTitle}' completed for compose service '{ComposeName}'.",
+                            deploymentTitle,
+                            composeName);
+                        return;
+                    }
+
+                    if (string.Equals(deployment.Status, "error", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(deployment.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var message =
+                            $"Dokploy registry compose deployment '{deploymentTitle}' for compose service '{composeName}' finished with status '{deployment.Status}'.";
+                        if (!string.IsNullOrWhiteSpace(deployment.ErrorMessage))
+                        {
+                            message += $" Error: {deployment.ErrorMessage}";
+                        }
+
+                        message += " Check the Dokploy deployment logs for the registry compose service for the Docker/Traefik details.";
+                        throw new InvalidOperationException(message);
+                    }
+                }
+                else
+                {
+                    lastStatus = "queued deployment not visible yet";
+                }
+
+                await Task.Delay(s_registryProbeInterval, timeoutCts.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+        }
+
+        var timeoutDetails = deploymentObserved
+            ? $"Last observed deployment ID: {lastDeploymentId ?? "unknown"}, status: {lastStatus ?? "unknown"}."
+            : "The queued deployment did not appear in Dokploy's compose deployment list.";
+        throw new TimeoutException(
+            $"Timed out after {s_composeDeploymentTimeout.TotalSeconds:0}s waiting for Dokploy registry compose deployment '{deploymentTitle}' for compose service '{composeName}' to finish. {timeoutDetails}");
     }
 
     private static async Task<bool> ComposeHasDomainAsync(
@@ -2040,6 +2753,82 @@ public sealed partial class DokployDeploymentExecutor
         catch
         {
             return false;
+        }
+    }
+
+    private static async Task<bool> EnsureRegistryComposeDomainAsync(
+        DokployApiClient client,
+        string composeId,
+        string host,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        var domains = await GetComposeDomainsAsync(client, composeId, ct).ConfigureAwait(false);
+        var domain = domains.FirstOrDefault(domain =>
+            string.Equals(domain.Host, host, StringComparison.OrdinalIgnoreCase));
+
+        if (domain is null)
+        {
+            await client.CreateComposeDomainAsync(
+                composeId,
+                "registry",
+                host,
+                5000,
+                https: true,
+                certificateType: "letsencrypt",
+                ct: ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "Requested Dokploy registry domain '{RegistryHost}' for compose ID '{ComposeId}'",
+                host,
+                composeId);
+            return true;
+        }
+
+        var needsUpdate = domain.Https != true
+            || domain.Port != 5000
+            || !string.Equals(domain.ServiceName, "registry", StringComparison.Ordinal)
+            || !string.Equals(domain.DomainType, "compose", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(domain.CertificateType, "letsencrypt", StringComparison.OrdinalIgnoreCase);
+
+        if (!needsUpdate)
+        {
+            return false;
+        }
+
+        await client.UpdateDomainAsync(
+            domain.DomainId,
+            host,
+            port: 5000,
+            https: true,
+            certificateType: "letsencrypt",
+            serviceName: "registry",
+            domainType: "compose",
+            ct: ct).ConfigureAwait(false);
+        logger.LogInformation(
+            "Updated Dokploy registry domain '{RegistryHost}' to enable HTTPS with Let's Encrypt.",
+            host);
+        return true;
+    }
+
+    private static async Task<IReadOnlyList<string>> TryGetComposeDomainHostsAsync(
+        DokployApiClient client,
+        string composeId,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await GetComposeDomainHostsAsync(client, composeId, ct).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex)
+        {
+            logger.LogDebug(ex, "Could not read existing Dokploy compose domains for compose '{ComposeId}'.", composeId);
+            return [];
+        }
+        catch (JsonException ex)
+        {
+            logger.LogDebug(ex, "Could not parse existing Dokploy compose domains for compose '{ComposeId}'.", composeId);
+            return [];
         }
     }
 
@@ -2087,19 +2876,97 @@ public sealed partial class DokployDeploymentExecutor
         DokployApiClient client,
         string composeId,
         CancellationToken ct)
+        => (await GetComposeDomainsAsync(client, composeId, ct).ConfigureAwait(false))
+            .Select(static domain => domain.Host)
+            .Where(static host => !string.IsNullOrWhiteSpace(host))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static host => host, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static async Task<DokployDomain[]> GetComposeDomainsAsync(
+        DokployApiClient client,
+        string composeId,
+        CancellationToken ct)
     {
-        using var document = await client.GetComposeAsync(composeId, ct).ConfigureAwait(false);
-        if (!document.RootElement.TryGetProperty("domains", out var domains) || domains.ValueKind != JsonValueKind.Array)
+        var domains = new Dictionary<string, DokployDomain>(StringComparer.OrdinalIgnoreCase);
+
+        using (var domainsDocument = await client.GetComposeDomainsAsync(composeId, ct).ConfigureAwait(false))
         {
-            return [];
+            CollectDomains(domainsDocument.RootElement, domains);
         }
 
-        return domains.EnumerateArray()
-            .Select(domain => domain.TryGetProperty("host", out var hostElement) ? hostElement.GetString() : null)
-            .Where(host => !string.IsNullOrWhiteSpace(host))
-            .Cast<string>()
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        if (domains.Count == 0)
+        {
+            using var composeDocument = await client.GetComposeAsync(composeId, ct).ConfigureAwait(false);
+            CollectDomains(composeDocument.RootElement, domains);
+        }
+
+        return domains.Values
+            .OrderBy(static domain => domain.Host, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static string? GetPreferredDomainHost(IEnumerable<string> hosts)
+        => hosts
+            .Where(static host => !string.IsNullOrWhiteSpace(host))
+            .OrderBy(static host => host, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+    private static DokployRegistry? FindExistingRegistry(
+        IEnumerable<DokployRegistry> registries,
+        string registryName,
+        string? registryHost)
+        => registries.FirstOrDefault(registry =>
+                string.Equals(registry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase))
+            ?? (registryHost is null
+                ? null
+                : registries.FirstOrDefault(registry =>
+                    string.Equals(NormalizeRegistryHost(registry.RegistryUrl), registryHost, StringComparison.OrdinalIgnoreCase)));
+
+    private static string? NormalizeRegistryHost(string? registryUrl)
+    {
+        if (string.IsNullOrWhiteSpace(registryUrl))
+        {
+            return null;
+        }
+
+        var value = registryUrl.Trim().TrimEnd('/');
+        if (Uri.TryCreate(value, UriKind.Absolute, out var absoluteUri))
+        {
+            return absoluteUri.Host;
+        }
+
+        var pathIndex = value.IndexOf('/');
+        return pathIndex >= 0 ? value[..pathIndex] : value;
+    }
+
+    private static void CollectDomainHosts(JsonElement element, ISet<string> hosts)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (string.Equals(property.Name, "host", StringComparison.OrdinalIgnoreCase)
+                        && property.Value.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(property.Value.GetString()))
+                    {
+                        hosts.Add(property.Value.GetString()!);
+                    }
+
+                    CollectDomainHosts(property.Value, hosts);
+                }
+
+                break;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    CollectDomainHosts(item, hosts);
+                }
+
+                break;
+        }
     }
 
     private static async Task<RegistryProbeResult> ProbeRegistryCredentialsOnceAsync(
@@ -2150,9 +3017,10 @@ public sealed partial class DokployDeploymentExecutor
         {
         }
 
+        var diagnosticHint = GetRegistryProbeDiagnosticHint(lastFailure);
         var diagnosticSuffix = string.IsNullOrWhiteSpace(lastFailure)
-            ? "Initial sslip.io DNS and Let's Encrypt provisioning can take several minutes on a fresh registry domain."
-            : $"Last probe result: {lastFailure} Initial sslip.io DNS and Let's Encrypt provisioning can take several minutes on a fresh registry domain.";
+            ? diagnosticHint
+            : $"Last probe result: {lastFailure} {diagnosticHint}";
 
         throw new TimeoutException(
             $"Timed out after {s_registryBootstrapTimeout.TotalSeconds:0}s waiting for registry credentials to become valid at https://{registryHost}/v2/. {diagnosticSuffix}");
@@ -2172,11 +3040,30 @@ public sealed partial class DokployDeploymentExecutor
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", token);
 
             using var response = await httpClient.SendAsync(request, ct).ConfigureAwait(false);
-            return response.StatusCode == HttpStatusCode.OK
-                ? RegistryProbeResult.Ready
-                : new RegistryProbeResult(
-                    false,
-                    $"registry returned {(int)response.StatusCode} {response.ReasonPhrase}.");
+            var hasDockerDistributionHeader = HasDockerDistributionHeader(response, out var distributionHeader);
+            if (response.StatusCode == HttpStatusCode.OK)
+            {
+                return hasDockerDistributionHeader
+                    ? RegistryProbeResult.Ready
+                    : new RegistryProbeResult(
+                        false,
+                        string.IsNullOrWhiteSpace(distributionHeader)
+                            ? "registry returned 200 OK but did not include Docker-Distribution-Api-Version: registry/2.0."
+                            : $"registry returned 200 OK but Docker-Distribution-Api-Version was '{distributionHeader}', not registry/2.0.");
+            }
+
+            var authenticateHeader = response.Headers.WwwAuthenticate.ToString();
+            var details = $"registry returned {(int)response.StatusCode} {response.ReasonPhrase}.";
+            if (!string.IsNullOrWhiteSpace(authenticateHeader))
+            {
+                details += $" WWW-Authenticate: {authenticateHeader}.";
+            }
+            if (!string.IsNullOrWhiteSpace(distributionHeader))
+            {
+                details += $" Docker-Distribution-Api-Version: {distributionHeader}.";
+            }
+
+            return new RegistryProbeResult(false, details);
         }
         catch (SocketException ex)
         {
@@ -2184,7 +3071,13 @@ public sealed partial class DokployDeploymentExecutor
         }
         catch (HttpRequestException ex)
         {
-            return new RegistryProbeResult(false, $"HTTP request failed: {ex.Message}");
+            var details = $"HTTP request failed: {ex.Message}";
+            if (ex.InnerException is not null && !string.IsNullOrWhiteSpace(ex.InnerException.Message))
+            {
+                details += $" Inner exception: {ex.InnerException.Message}";
+            }
+
+            return new RegistryProbeResult(false, details);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -2194,6 +3087,39 @@ public sealed partial class DokployDeploymentExecutor
         {
             return new RegistryProbeResult(false, $"timeout: {ex.Message}");
         }
+    }
+
+    private static bool HasDockerDistributionHeader(HttpResponseMessage response, out string? distributionHeader)
+    {
+        distributionHeader = response.Headers.TryGetValues("Docker-Distribution-Api-Version", out var distributionValues)
+            ? string.Join(", ", distributionValues)
+            : null;
+
+        return distributionValues?.Any(static value =>
+            string.Equals(value.Trim(), "registry/2.0", StringComparison.OrdinalIgnoreCase)) == true;
+    }
+
+    private static string GetRegistryProbeDiagnosticHint(string? lastFailure)
+    {
+        if (string.IsNullOrWhiteSpace(lastFailure))
+        {
+            return "Initial sslip.io DNS and Let's Encrypt provisioning can take several minutes on a fresh registry domain.";
+        }
+
+        if (lastFailure.Contains("404", StringComparison.OrdinalIgnoreCase)
+            || lastFailure.Contains("Not Found", StringComparison.OrdinalIgnoreCase)
+            || lastFailure.Contains("NotFound", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Dokploy/Traefik is not routing this host to the registry compose service yet. Check the registry compose deployment logs and the generated domain labels/network.";
+        }
+
+        if (lastFailure.Contains("SSL", StringComparison.OrdinalIgnoreCase)
+            || lastFailure.Contains("certificate", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Dokploy/Traefik is not serving a valid HTTPS certificate for this registry host yet. The managed registry intentionally uses HTTPS because Docker push to plain HTTP requires an insecure-registry daemon configuration.";
+        }
+
+        return "Initial sslip.io DNS and Let's Encrypt provisioning can take several minutes on a fresh registry domain.";
     }
 
     private static async Task<bool> CanResolveDnsAsync(string host, CancellationToken ct)
@@ -2225,15 +3151,28 @@ public sealed partial class DokployDeploymentExecutor
     }
 
     private static async Task<string?> TryDeriveSslipRegistryHostAsync(string serverUrl, string projectSlug, CancellationToken ct)
+        => await TryDeriveSslipRegistryHostAsync(serverUrl, projectSlug, projectId: null, ct).ConfigureAwait(false);
+
+    private static async Task<string?> TryDeriveSslipRegistryHostAsync(
+        string serverUrl,
+        string projectSlug,
+        string? projectId,
+        CancellationToken ct)
     {
         try
         {
             var serverHost = new Uri(serverUrl).Host;
             var addresses = await Dns.GetHostAddressesAsync(serverHost).WaitAsync(TimeSpan.FromSeconds(5), ct).ConfigureAwait(false);
             var address = addresses.FirstOrDefault(static address => address.AddressFamily == AddressFamily.InterNetwork);
-            return address is null
-                ? null
-                : $"container-registry-{projectSlug}.{address}.sslip.io";
+            if (address is null)
+            {
+                return null;
+            }
+
+            var hostSlug = string.IsNullOrWhiteSpace(projectId)
+                ? projectSlug
+                : $"{projectSlug}-{CreateStableHostSuffix(projectId)}";
+            return $"container-registry-{hostSlug}.{address}.sslip.io";
         }
         catch (SocketException)
         {
@@ -2243,6 +3182,12 @@ public sealed partial class DokployDeploymentExecutor
         {
             return null;
         }
+    }
+
+    private static string CreateStableHostSuffix(string value)
+    {
+        var sanitized = SanitizeName(value);
+        return sanitized.Length <= 8 ? sanitized : sanitized[..8];
     }
 
     private static async Task<string?> TryDeriveSslipApplicationHostAsync(
@@ -3544,7 +4489,7 @@ public sealed partial class DokployDeploymentExecutor
             .ToArray();
 
         DokployProject? existing = null;
-        if (activeOrganization is not null)
+        if (!string.IsNullOrWhiteSpace(activeOrganization?.OrganizationId))
         {
             existing = matches.FirstOrDefault(project =>
                 string.Equals(project.OrganizationId, activeOrganization.OrganizationId, StringComparison.OrdinalIgnoreCase));
@@ -3559,7 +4504,11 @@ public sealed partial class DokployDeploymentExecutor
             logger.LogInformation(
                 "Found existing Dokploy project '{ProjectName}'{OrganizationSuffix}",
                 existing.Name,
-                activeOrganization is null ? string.Empty : $" in organization '{activeOrganization.Name}'");
+                activeOrganization is null
+                    ? string.Empty
+                    : string.IsNullOrWhiteSpace(activeOrganization.OrganizationId)
+                        ? $" while active organization '{activeOrganization.Name}' did not return an organization ID"
+                        : $" in organization '{activeOrganization.Name}'");
             return existing;
         }
 

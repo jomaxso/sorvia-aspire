@@ -1,6 +1,6 @@
 #pragma warning disable ASPIREINTERACTION001 // This type is used for interaction with the Dokploy REST API and is not intended for direct use by application code. Suppress this diagnostic to proceed.
 #pragma warning disable ASPIREATS001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
-#pragma warning disable ASPIREPIPELINES001 // Custom deployment target replaces the stock Docker Compose deploy step.
+#pragma warning disable ASPIREPIPELINES001 // Custom deployment target replaces the stock Docker Compose deploy/destroy steps.
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Docker;
@@ -41,8 +41,8 @@ namespace Aspire.Hosting;
 /// <list type="bullet">
 ///   <item><description><c>publish-{name}</c> — Runs the exact Aspire.Hosting.Docker publish implementation. RequiredBy <c>Publish</c>.</description></item>
 ///   <item><description><c>prepare-{name}</c> — Runs the exact Aspire.Hosting.Docker prepare implementation before deployment.</description></item>
-///   <item><description><c>docker-compose-up-{name}</c> — Validates Dokploy configuration and deploys resources to Dokploy. DependsOn <c>prepare-{name}</c>, RequiredBy <c>Deploy</c>.</description></item>
-///   <item><description><c>destroy-compose-{name}</c> — Deletes Dokploy applications, native databases, auto-registry resources, and removes the empty project shell. RequiredBy <c>Destroy</c>.</description></item>
+///   <item><description><c>dokploy-validate-{name}</c> through <c>dokploy-summary-{name}</c> — Validates configuration, reconciles project state, handles registry/images/databases/applications, releases changed applications, and writes the Dokploy summary. The final summary step is RequiredBy <c>Deploy</c>.</description></item>
+///   <item><description><c>dokploy-destroy-validate-{name}</c> through <c>dokploy-destroy-summary-{name}</c> — Resolves the destroy target, deletes Dokploy applications, native databases, auto-registry resources, removes the empty project shell, and writes the destroy summary. The final summary step is RequiredBy <c>Destroy</c>.</description></item>
 /// </list>
 ///
 /// <para><b>Configuration:</b></para>
@@ -170,31 +170,160 @@ public static class DokployEnvironmentExtensions
             var wrapper = new PipelineStepAnnotation(async factoryContext =>
             {
                 var steps = new List<PipelineStep>(await annotation.CreateStepsAsync(factoryContext).ConfigureAwait(false));
-                steps.RemoveAll(step => string.Equals(step.Name, $"docker-compose-up-{resource.Name}", StringComparison.Ordinal));
-                steps.RemoveAll(step => string.Equals(step.Name, $"destroy-compose-{resource.Name}", StringComparison.Ordinal));
+                var dockerComposeUpStepName = $"docker-compose-up-{resource.Name}";
+                var dockerComposeDestroyStepName = $"destroy-compose-{resource.Name}";
+                var dokployValidateStepName = $"dokploy-validate-{resource.Name}";
+                var dokployProjectStepName = $"dokploy-project-{resource.Name}";
+                var dokployRegistryStepName = $"dokploy-registry-{resource.Name}";
+                var dokployImagesStepName = $"dokploy-images-{resource.Name}";
+                var dokployDatabasesStepName = $"dokploy-databases-{resource.Name}";
+                var dokployApplicationsStepName = $"dokploy-applications-{resource.Name}";
+                var dokployReleaseStepName = $"dokploy-release-{resource.Name}";
+                var dokploySummaryStepName = $"dokploy-summary-{resource.Name}";
+                var dokployDestroyValidateStepName = $"dokploy-destroy-validate-{resource.Name}";
+                var dokployDestroyDiscoverStepName = $"dokploy-destroy-discover-{resource.Name}";
+                var dokployDestroyApplicationsStepName = $"dokploy-destroy-applications-{resource.Name}";
+                var dokployDestroyDatabasesStepName = $"dokploy-destroy-databases-{resource.Name}";
+                var dokployDestroyRegistryStepName = $"dokploy-destroy-registry-{resource.Name}";
+                var dokployDestroyProjectStepName = $"dokploy-destroy-project-{resource.Name}";
+                var dokployDestroySummaryStepName = $"dokploy-destroy-summary-{resource.Name}";
+
+                foreach (var step in steps)
+                {
+                    ReplaceStepReference(step.RequiredBySteps, dockerComposeUpStepName, dokployImagesStepName);
+                    ReplaceStepReference(step.DependsOnSteps, dockerComposeUpStepName, dokploySummaryStepName);
+                    ReplaceStepReference(step.RequiredBySteps, dockerComposeDestroyStepName, dokployDestroyValidateStepName);
+                    ReplaceStepReference(step.DependsOnSteps, dockerComposeDestroyStepName, dokployDestroySummaryStepName);
+                }
+
+                steps.RemoveAll(step => string.Equals(step.Name, dockerComposeUpStepName, StringComparison.Ordinal));
+                steps.RemoveAll(step => string.Equals(step.Name, dockerComposeDestroyStepName, StringComparison.Ordinal));
+                steps.RemoveAll(step => IsDokployStepForResource(step, resource));
                 steps.RemoveAll(IsDockerComposePrintSummaryStep);
 
-                steps.Add(new PipelineStep
-                {
-                    Name = $"docker-compose-up-{resource.Name}",
-                    Description = $"Deploy resources for environment {resource.Name} using Dokploy",
-                    Tags = ["docker-compose-up", "dokploy", "dokploy-deploy"],
-                    Resource = resource,
-                    Action = ctx => DokployDeploymentExecutor.DeployToDokployAsync(ctx, resource, target),
-                    DependsOnSteps = [$"prepare-{resource.Name}"],
-                    RequiredBySteps = [WellKnownPipelineSteps.Deploy],
-                });
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dockerComposeUpStepName,
+                    $"Resolve Docker Compose build prerequisites for Dokploy environment {resource.Name}",
+                    _ => Task.CompletedTask,
+                    [$"prepare-{resource.Name}"],
+                    tags: ["dokploy-compat"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dockerComposeDestroyStepName,
+                    $"Resolve Docker Compose destroy prerequisites for Dokploy environment {resource.Name}",
+                    _ => Task.CompletedTask,
+                    [WellKnownPipelineSteps.DestroyPrereq],
+                    tags: ["dokploy-compat"]));
 
-                steps.Add(new PipelineStep
-                {
-                    Name = $"destroy-compose-{resource.Name}",
-                    Description = $"Destroy Dokploy resources for environment {resource.Name}",
-                    Tags = ["destroy-compose", "dokploy", "dokploy-destroy"],
-                    Resource = resource,
-                    Action = ctx => DokployDeploymentExecutor.DestroyDokployAsync(ctx, resource, target),
-                    DependsOnSteps = [WellKnownPipelineSteps.DestroyPrereq],
-                    RequiredBySteps = [WellKnownPipelineSteps.Destroy],
-                });
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployValidateStepName,
+                    $"Validate Dokploy configuration for environment {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ValidateDokployDeploymentAsync(ctx, resource, target),
+                    [$"prepare-{resource.Name}"],
+                    tags: ["dokploy-deploy", "dokploy-validate"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployProjectStepName,
+                    $"Reconcile Dokploy project and environment for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ReconcileDokployProjectAsync(ctx, resource, target),
+                    [dokployValidateStepName],
+                    tags: ["dokploy-deploy", "dokploy-project"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployRegistryStepName,
+                    $"Ensure Dokploy project registry for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.EnsureDokployRegistryAsync(ctx, resource, target),
+                    [dokployProjectStepName],
+                    tags: ["dokploy-deploy", "dokploy-registry"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployImagesStepName,
+                    $"Push application images for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.PushDokployImagesAsync(ctx, resource, target),
+                    [dokployRegistryStepName, dockerComposeUpStepName],
+                    tags: ["dokploy-deploy", "dokploy-images"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDatabasesStepName,
+                    $"Provision Dokploy databases for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ProvisionDokployDatabasesAsync(ctx, resource, target),
+                    [dokployImagesStepName],
+                    tags: ["dokploy-deploy", "dokploy-databases"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployApplicationsStepName,
+                    $"Configure Dokploy applications for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ConfigureDokployApplicationsAsync(ctx, resource, target),
+                    [dokployDatabasesStepName],
+                    tags: ["dokploy-deploy", "dokploy-applications"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployReleaseStepName,
+                    $"Release changed Dokploy applications for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ReleaseDokployApplicationsAsync(ctx, resource, target),
+                    [dokployApplicationsStepName],
+                    tags: ["dokploy-deploy", "dokploy-release"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokploySummaryStepName,
+                    $"Write Dokploy deployment summary for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.WriteDokployDeploymentSummaryAsync(ctx, resource, target),
+                    [dokployReleaseStepName],
+                    [WellKnownPipelineSteps.Deploy],
+                    ["dokploy-deploy", "dokploy-summary"]));
+
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyValidateStepName,
+                    $"Validate Dokploy destroy configuration for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ValidateDokployDestroyAsync(ctx, resource, target),
+                    [dockerComposeDestroyStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-validate"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyDiscoverStepName,
+                    $"Discover Dokploy destroy target for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DiscoverDokployDestroyTargetAsync(ctx, resource, target),
+                    [dokployDestroyValidateStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-discover"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyApplicationsStepName,
+                    $"Destroy Dokploy applications for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DestroyDokployApplicationsAsync(ctx, resource, target),
+                    [dokployDestroyDiscoverStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-applications"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyDatabasesStepName,
+                    $"Destroy Dokploy databases for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DestroyDokployDatabasesAsync(ctx, resource, target),
+                    [dokployDestroyApplicationsStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-databases"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyRegistryStepName,
+                    $"Destroy Dokploy project registry for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DestroyDokployRegistryAsync(ctx, resource, target),
+                    [dokployDestroyDatabasesStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-registry"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyProjectStepName,
+                    $"Remove empty Dokploy project for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.RemoveEmptyDokployProjectAsync(ctx, resource, target),
+                    [dokployDestroyRegistryStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-project"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroySummaryStepName,
+                    $"Write Dokploy destroy summary for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.WriteDokployDestroySummaryAsync(ctx, resource, target),
+                    [dokployDestroyProjectStepName],
+                    [WellKnownPipelineSteps.Destroy],
+                    ["dokploy-destroy", "dokploy-destroy-summary"]));
 
                 return steps;
             });
@@ -208,4 +337,38 @@ public static class DokployEnvironmentExtensions
 
     private static bool IsDockerComposePrintSummaryStep(PipelineStep step)
         => step.Tags.Any(tag => string.Equals(tag, "print-summary", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsDokployStepForResource(PipelineStep step, DockerComposeEnvironmentResource resource)
+        => ReferenceEquals(step.Resource, resource)
+           && step.Tags.Any(tag => string.Equals(tag, "dokploy", StringComparison.OrdinalIgnoreCase));
+
+    private static void ReplaceStepReference(List<string> stepNames, string oldStepName, string newStepName)
+    {
+        for (var i = 0; i < stepNames.Count; i++)
+        {
+            if (string.Equals(stepNames[i], oldStepName, StringComparison.Ordinal))
+            {
+                stepNames[i] = newStepName;
+            }
+        }
+    }
+
+    private static PipelineStep CreateDokployStep(
+        DockerComposeEnvironmentResource resource,
+        string name,
+        string description,
+        Func<PipelineStepContext, Task> action,
+        string[] dependsOnSteps,
+        string[]? requiredBySteps = null,
+        string[]? tags = null)
+        => new()
+        {
+            Name = name,
+            Description = description,
+            Tags = tags is null ? ["dokploy"] : ["dokploy", .. tags],
+            Resource = resource,
+            Action = action,
+            DependsOnSteps = new List<string>(dependsOnSteps),
+            RequiredBySteps = requiredBySteps is null ? [] : new List<string>(requiredBySteps),
+        };
 }

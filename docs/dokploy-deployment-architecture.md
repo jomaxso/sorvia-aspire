@@ -63,36 +63,65 @@ The integration is intentionally inactive during normal local run mode. This kee
 
 ## Pipeline integration
 
-The package does not reimplement the full Aspire Docker Compose publisher. Instead, it reuses the stock publisher and swaps the final delivery step.
+The package does not reimplement the full Aspire Docker Compose publisher. Instead, it reuses the stock publisher and swaps the final delivery action for named Dokploy phases. A no-op compatibility bridge keeps the stock step name available because Aspire's generated build steps reference it through `RequiredBySteps`; that bridge does not run Docker Compose.
 
 1. `AddDockerComposeEnvironment(...)` creates a normal Docker Compose publishing environment.
 2. `WithDokployDeploymentTarget(...)` adds a `DokployDeploymentTargetAnnotation`.
 3. The annotation registers a `ConfigureComposeFile(...)` callback that captures generated Compose service data.
 4. The extension wraps the environment's `PipelineStepAnnotation`.
-5. The wrapper removes the stock `docker-compose-up-{name}` step.
-6. The wrapper adds a new step with the same step name, but the action calls `DokployDeploymentExecutor`.
-7. The new step still depends on `prepare-{name}` and is still required by Aspire's `Deploy` step.
-8. The wrapper also removes the stock `destroy-compose-{name}` step and adds a Dokploy destroy step with the same name, required by Aspire's `Destroy` step.
+5. The wrapper removes the stock `docker-compose-up-{name}` action and replaces it with a no-op compatibility bridge of the same name.
+6. The wrapper adds named deploy phases: `dokploy-validate-{name}`, `dokploy-project-{name}`, `dokploy-registry-{name}`, `dokploy-images-{name}`, `dokploy-databases-{name}`, `dokploy-applications-{name}`, `dokploy-release-{name}`, and `dokploy-summary-{name}`.
+7. The first Dokploy deploy phase depends on `prepare-{name}`. `dokploy-images-{name}` depends on the compatibility bridge so Aspire's generated `build-*` steps still run before images are pushed. The final `dokploy-summary-{name}` phase is required by Aspire's `Deploy` step.
+8. The wrapper also removes the stock `destroy-compose-{name}` action, replaces it with a no-op compatibility bridge, and adds named destroy phases from `dokploy-destroy-validate-{name}` through `dokploy-destroy-summary-{name}`. The final destroy summary phase is required by Aspire's `Destroy` step.
 
 ```mermaid
 flowchart LR
     A["Process parameters"] --> B["publish-{name}"]
     B --> C["prepare-{name}"]
-    C --> D["docker-compose-up-{name}"]
-    D --> E["Deploy"]
-    F["Destroy prerequisites"] --> G["destroy-compose-{name}"]
-    G --> H["Destroy"]
+    C --> D["docker-compose-up-{name}<br/>compat bridge"]
+    C --> V["dokploy-validate-{name}"]
+    V --> P["dokploy-project-{name}"]
+    P --> R["dokploy-registry-{name}"]
+    R --> I["dokploy-images-{name}"]
+    D --> I
+    I --> DB["dokploy-databases-{name}"]
+    DB --> APP["dokploy-applications-{name}"]
+    APP --> REL["dokploy-release-{name}"]
+    REL --> SUM["dokploy-summary-{name}"]
+    SUM --> E["Deploy"]
+    F["Destroy prerequisites"] --> G["destroy-compose-{name}<br/>compat bridge"]
+    G --> DV["dokploy-destroy-validate-{name}"]
+    DV --> DD["dokploy-destroy-discover-{name}"]
+    DD --> DA["dokploy-destroy-applications-{name}"]
+    DA --> DDB["dokploy-destroy-databases-{name}"]
+    DDB --> DR["dokploy-destroy-registry-{name}"]
+    DR --> DP["dokploy-destroy-project-{name}"]
+    DP --> DS["dokploy-destroy-summary-{name}"]
+    DS --> H["Destroy"]
 
     subgraph Replacement["Dokploy replacement"]
-        D2["docker-compose-up-{name}<br/>Action = DokployDeploymentExecutor"]
-        G2["destroy-compose-{name}<br/>Action = DokployDeploymentExecutor"]
+        V
+        P
+        R
+        I
+        DB
+        APP
+        REL
+        SUM
+        DV
+        DD
+        DA
+        DDB
+        DR
+        DP
+        DS
     end
 
-    D -. "stock Docker Compose up removed" .-> D2
-    G -. "stock Docker Compose destroy removed" .-> G2
+    D -. "stock Docker Compose up action removed" .-> V
+    G -. "stock Docker Compose destroy action removed" .-> DV
 ```
 
-The step names are intentionally kept as `docker-compose-up-{name}` and `destroy-compose-{name}` because they are part of the Docker Compose publisher pipeline shape. Keeping the names allows the rest of the Aspire deployment dependency graph to stay compatible while changing only the actions that run at those points.
+The Dokploy replacement steps use Dokploy-specific names so Aspire CLI output shows prefixes such as `dokploy-registry-{name}`, `dokploy-applications-{name}`, and `dokploy-destroy-registry-{name}` instead of one large Docker Compose execution step. The old Docker Compose step names can still appear as short `dokploy-compat` bridge steps, but they only preserve Aspire's generated build/destroy dependencies and do not perform deployment work.
 
 ## Parameter registration and configuration
 
@@ -144,7 +173,7 @@ The executor only deploys compute resources that have a captured Compose service
 
 ## Full deployment sequence
 
-When the replaced deploy step runs, `DokployDeploymentExecutor` performs the following high-level sequence.
+When the Dokploy deploy phases run, `DokployDeploymentExecutor` performs the following high-level sequence. Each pipeline phase stores shared deployment state and the next phase resumes from that state.
 
 ```mermaid
 sequenceDiagram
@@ -154,22 +183,29 @@ sequenceDiagram
     participant Client as DokployApiClient
     participant Dokploy as Dokploy server
 
-    Pipeline->>Executor: Run replaced docker-compose-up step
+    Pipeline->>Executor: Run dokploy-validate step
     Executor->>Executor: Resolve and validate Dokploy parameters
     Executor->>Client: List projects
     Client->>Dokploy: GET /api/project.all
+    Pipeline->>Executor: Run dokploy-project step
     Executor->>Client: Get active organization
     Client->>Dokploy: GET /api/organization.active
     Executor->>Client: Find or create project
     Executor->>Client: Find or create environment
     Executor->>Executor: Select deployable compute resources
+    Pipeline->>Executor: Run dokploy-registry step
     Executor->>Client: Bootstrap project registry if needed
+    Pipeline->>Executor: Run dokploy-images step
     Executor->>Docker: Tag and push local images if auto-registry is used
+    Pipeline->>Executor: Run dokploy-databases step
     Executor->>Client: Provision native databases
+    Pipeline->>Executor: Run dokploy-applications step
     Executor->>Executor: Resolve hostnames, ports, and env vars
     Executor->>Client: Create or update applications
     Executor->>Client: Sync application domains
+    Pipeline->>Executor: Run dokploy-release step
     Executor->>Client: Trigger deployments
+    Pipeline->>Executor: Run dokploy-summary step
     Executor->>Pipeline: Write deployment summary
 ```
 
@@ -233,25 +269,38 @@ If the environment or resources use an explicit `IContainerRegistry`, the execut
 
 If no default registry and no per-resource registry references are configured, the executor creates a private registry inside the Dokploy project:
 
-1. Derive an `sslip.io` registry host from the Dokploy server.
-2. Generate deterministic registry credentials using project ID, host, and API key.
-3. Create or reuse a Dokploy Compose service running `registry:2`.
-4. Configure htpasswd authentication directly in the Compose file so the registry container receives the credentials without depending on Dokploy Compose env interpolation.
-5. Store a stable credential fingerprint next to the generated htpasswd payload. The bcrypt hash value is intentionally ignored during comparisons because it is re-salted every run.
-6. Add an HTTPS domain for the registry when missing.
-7. Deploy or redeploy the registry Compose service only when it is new, changed, missing a domain, or not accepting the expected credentials.
-8. Wait until registry credentials work after setup or repair work.
-9. Register or update the registry in Dokploy.
-10. Tag local images with the new registry prefix.
-11. Push images using Docker or Podman.
+1. Reuse an existing Dokploy registry record when one already matches the project registry name or the existing compose-domain host.
+2. Prefer an existing registry compose domain when one is already attached to the Dokploy compose service. If the registry record points at a stale host, defer updating the registry record until the effective host accepts HTTPS registry logins, because Dokploy validates `registry.update` with Docker login.
+3. Probe the effective registry host with the registry record credentials.
+4. If the live registry rejects those credentials, repair the existing registry Compose service by writing htpasswd credentials that match the registry record, then redeploy that existing compose service.
+5. If no registry record or compose domain exists, derive an `sslip.io` registry host from the Dokploy server, project slug, and a short project ID suffix. This keeps recreated Dokploy projects with the same name from fighting over stale Traefik routes and credentials.
+6. Generate deterministic registry credentials using project ID, the effective host, and API key when Dokploy does not expose stored credentials on the registry record.
+7. Create or reuse a Dokploy Compose service running `registry:2`.
+8. Configure htpasswd authentication directly in the Compose file so the registry container receives the credentials without depending on Dokploy Compose env interpolation. The registry service overrides the container entrypoint with a small shell bootstrap that writes `/auth/htpasswd` before handing control back to the official registry entrypoint.
+9. Store a stable credential fingerprint next to the generated htpasswd payload. The bcrypt hash value is intentionally ignored during comparisons because it is re-salted every run.
+10. Add an HTTPS domain for the registry when missing and no existing registry record/domain can be reused.
+11. Deploy or redeploy the registry Compose service only when it is new, changed, missing a domain, or not accepting the expected credentials.
+12. Wait until registry credentials work after setup or repair work.
+13. Register or update the registry in Dokploy.
+14. Tag local images with the new registry prefix.
+15. Push images using Docker or Podman.
 
 ```mermaid
 flowchart TD
     A["Compute resources selected"] --> B{"Explicit registry configured?"}
     B -->|Yes| C["Use existing image references"]
     B -->|No| D["Bootstrap Dokploy project registry"]
-    D --> E["Create or reuse registry Compose service"]
-    E --> F{"Compose, domain, and credentials already valid?"}
+    D --> D2{"Existing Dokploy registry record?"}
+    D2 -->|Yes| D3["Probe existing registry credentials"]
+    D3 -->|Ready| H["Reuse existing registry"]
+    D3 -->|Rejected| D4["Repair existing registry Compose credentials"]
+    D4 --> I["Wait for registry login"]
+    D2 -->|No| E["Create or reuse registry Compose service"]
+    E --> E2{"Existing compose domain?"}
+    E2 -->|Yes| E3["Use existing domain as registry host"]
+    E2 -->|No| E4["Derive project-scoped sslip.io host"]
+    E3 --> F{"Compose, domain, and credentials already valid?"}
+    E4 --> F
     F -->|Yes| H["Reuse running registry"]
     F -->|No| G["Update and deploy registry Compose service"]
     G --> I["Wait for registry login"]
@@ -375,24 +424,23 @@ Application names are sanitized from Aspire resource names so they are safe as D
 
 ## Domain synchronization
 
-Domains are managed only for resources that expose external HTTP or HTTPS endpoints. Internal-only services are still deployed, but no public domain is created for them.
+Existing Dokploy domains are preserved. If an application already has one or more domains, the executor reuses those domains and does not create a generated replacement. A new domain is created only when the application has no domains and the Aspire resource exposes an external HTTP or HTTPS endpoint.
 
 ```mermaid
 flowchart TD
-    A["Application resource"] --> B{"External HTTP/HTTPS endpoint?"}
-    B -->|No| C["Remove managed application domains"]
-    B -->|Yes| D["Derive preferred host from Dokploy server and resource name"]
-    D --> E{"Preferred host resolves in DNS?"}
-    E -->|Yes| F["Use preferred host"]
-    E -->|No| G["Derive sslip.io fallback host"]
-    F --> H["Check existing app domains"]
-    G --> H
-    H --> I{"Target host already exists?"}
-    I -->|Yes| J["No domain change"]
-    I -->|No| K["Create HTTPS Dokploy domain"]
+    A["Application resource"] --> B{"Existing Dokploy domain?"}
+    B -->|Yes| C["Reuse existing domain"]
+    B -->|No| D{"External HTTP/HTTPS endpoint?"}
+    D -->|No| E["No domain change"]
+    D -->|Yes| F["Derive preferred host from Dokploy server and resource name"]
+    F --> G{"Preferred host resolves in DNS?"}
+    G -->|Yes| H["Use preferred host"]
+    G -->|No| I["Derive sslip.io fallback host"]
+    H --> J["Create HTTPS Dokploy domain"]
+    I --> J
 ```
 
-This keeps public endpoints deterministic while still providing a fallback for self-hosted Dokploy instances where custom DNS is not configured.
+This preserves manual or previously generated Dokploy domains while still providing deterministic defaults for new public endpoints.
 
 ## Deployment triggering and summary
 
@@ -413,7 +461,7 @@ Finally, the executor writes an Aspire pipeline summary containing:
 
 ## Destroy sequence
 
-When `aspire destroy` runs, the package does not execute Docker Compose locally. The `destroy-compose-{name}` step is replaced with a Dokploy API cleanup step that targets the same project and environment parameters used during deployment.
+When `aspire destroy` runs, the package does not execute Docker Compose locally. The stock `destroy-compose-{name}` step is replaced with named `dokploy-destroy-*` API cleanup phases that target the same project and environment parameters used during deployment.
 
 ```mermaid
 sequenceDiagram
@@ -422,24 +470,31 @@ sequenceDiagram
     participant Client as DokployApiClient
     participant Dokploy as Dokploy server
 
-    Pipeline->>Executor: Run replaced destroy-compose step
+    Pipeline->>Executor: Run dokploy-destroy-validate step
     Executor->>Executor: Resolve and validate Dokploy parameters
+    Pipeline->>Executor: Run dokploy-destroy-discover step
     Executor->>Client: Find project in active organization
     Client->>Dokploy: GET /api/project.all
     alt Project or environment missing
+        Pipeline->>Executor: Run dokploy-destroy-project step
         Executor->>Client: Remove project only if already empty
     else Target exists
+        Pipeline->>Executor: Run dokploy-destroy-applications step
         Executor->>Client: Delete matching applications
         Client->>Dokploy: POST /api/application.delete
+        Pipeline->>Executor: Run dokploy-destroy-databases step
         Executor->>Client: Delete matching native databases
         Client->>Dokploy: POST /api/postgres.remove etc.
+        Pipeline->>Executor: Run dokploy-destroy-registry step
         Executor->>Client: Delete auto-registry compose and registry record
         Client->>Dokploy: POST /api/compose.delete and /api/registry.remove
+        Pipeline->>Executor: Run dokploy-destroy-project step
         Executor->>Client: Inspect project contents
         Client->>Dokploy: GET /api/project.one
         Executor->>Client: Remove project if no services remain
         Client->>Dokploy: POST /api/project.remove
     end
+    Pipeline->>Executor: Run dokploy-destroy-summary step
     Executor->>Pipeline: Write destroy summary
 ```
 

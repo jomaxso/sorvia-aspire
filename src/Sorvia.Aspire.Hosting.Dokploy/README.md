@@ -51,10 +51,10 @@ builder.AddDockerComposeEnvironment("demo")
     .WithDokployDeploymentTarget();
 ```
 
-Both forms reuse the Docker Compose publish/prepare pipeline and replace the final `docker compose up` deploy step with Dokploy REST API orchestration. In run mode the Dokploy deployment target is not active, so the application still runs locally as usual.
+Both forms reuse the Docker Compose publish/prepare pipeline and replace the final `docker compose up` deploy step with Dokploy REST API orchestration. The original Docker Compose step name may still appear as a short compatibility bridge so Aspire's generated build dependencies remain valid, but it does not run Docker Compose. In run mode the Dokploy deployment target is not active, so the application still runs locally as usual.
 The explicit Docker Compose form mirrors the current demo application in this repository under `demo/demo.AppHost`.
 
-`aspire destroy` is also wired to Dokploy. The package replaces the Docker Compose destroy step with a Dokploy cleanup step that removes the deployed applications, their domains, Dokploy-native databases, and the auto-bootstrapped project registry. After those resources are gone, the Dokploy project itself is removed only when it no longer contains any services; if the project contains unrelated services, it is kept.
+`aspire destroy` is also wired to Dokploy. The package replaces the Docker Compose destroy step with named Dokploy cleanup phases that remove the deployed applications, their domains, Dokploy-native databases, and the auto-bootstrapped project registry. After those resources are gone, the Dokploy project itself is removed only when it no longer contains any services; if the project contains unrelated services, it is kept.
 
 ## Configuration
 
@@ -101,21 +101,21 @@ When enabled:
 
 Container images built from `ProjectResource` instances need a registry so the Dokploy server can pull them.
 
-**Without explicit configuration**, the integration bootstraps a **project-scoped private registry on Dokploy** automatically — creating a `registry:2` compose stack, configuring an `sslip.io` domain with Let's Encrypt, registering it in Dokploy, and pushing the built images.
+**Without explicit configuration**, the integration bootstraps a **project-scoped private registry on Dokploy** automatically — creating a `registry:2` compose stack, configuring an HTTPS domain with Let's Encrypt, registering it in Dokploy, and pushing the built images. If a Dokploy registry record for the project already exists, that registry is reused. If its stored URL does not match the existing registry compose domain, the existing registry record is updated to the existing domain only after that domain accepts HTTPS registry logins, instead of creating another registry or domain. Otherwise, the generated `sslip.io` registry host includes a short Dokploy project ID suffix so recreated projects with the same name do not collide with stale Traefik routes.
 
 Images that already point at a pullable registry (for example Docker Hub, MCR, GHCR, or other public/private registries) continue to use that registry directly. Only images available locally are mirrored into the auto-bootstrapped project registry.
 
 On the first deploy, the auto-bootstrapped registry may need a few minutes before the `sslip.io` host, Traefik route, and Let's Encrypt certificate are all ready for authenticated pushes.
 
-Subsequent deploys are idempotent. When the registry compose service, domain, credentials, and Dokploy registry record already match the desired state, the registry compose service is not updated or redeployed. Existing applications are also only redeployed when their image/provider, registry link, command, environment variables, domains, or deployment status require it.
+Subsequent deploys are idempotent. When a matching Dokploy registry record already exists and accepts its credentials, it is reused without redeploying the registry compose service. If that registry record exists but the live registry rejects its credentials, the existing compose service is repaired and redeployed with the registry resource credentials; no new registry or domain is created. When the registry has not been registered yet, the compose service, domain, credentials, and Dokploy registry record are compared and only changed when required. Existing applications are also only redeployed when their image/provider, registry link, command, environment variables, domains, or deployment status require it.
 
 ## Domain Management
 
 Application domains are managed automatically during publish-mode deploys.
 
 - A domain is created for a resource only when it exposes an external `http` or `https` endpoint. In practice this usually means opting the resource into public endpoints with Aspire methods such as `.WithExternalHttpEndpoints()`. The Aspire Dashboard is treated as public by default and is included in the same logic.
-- If a resource no longer has a managed external `http`/`https` endpoint, previously managed Dokploy domains for that application are removed.
-- If the preferred host already exists on the Dokploy application, no new domain is created.
+- If a Dokploy application already has one or more domains, those domains are reused and no generated replacement domain is created.
+- If a resource no longer has a managed external `http`/`https` endpoint, existing Dokploy domains are left untouched. `aspire destroy` still removes the application and its domains.
 - The preferred host is derived from the Dokploy server host and the Aspire project/resource names. If that host does not resolve, the integration falls back to an `sslip.io` hostname.
 - Application domains are created with HTTPS enabled.
 
@@ -126,13 +126,14 @@ var server = builder.AddCSharpApp("server", "../MyServer")
     .WithExternalHttpEndpoints();
 ```
 
-Without an external HTTP/HTTPS endpoint, the resource is still deployed, but no public Dokploy domain is created for it.
+Without an external HTTP/HTTPS endpoint, the resource is still deployed, but no new public Dokploy domain is created for it. If the resource already has a Dokploy domain, the deployment summary continues to show it.
 
 The project-scoped registry follows a separate rule set:
 
 - A registry domain is created only when the integration has to bootstrap its own Dokploy registry.
 - Auto-registry bootstrap happens only when no default container registry is configured on the Dokploy environment and no application has its own explicit container registry reference.
-- If the registry compose service already has the expected host, the existing domain is reused instead of creating another one.
+- If a matching Dokploy registry record already exists, that registry is reused. If its credentials no longer match the live registry compose service, the existing compose service is repaired with the registry resource credentials.
+- If the registry compose service already has any domain, that existing domain is reused as the registry host instead of deriving or creating another one.
 - Registry domains use `sslip.io` with Let's Encrypt because the managed registry is exposed through a Dokploy compose service.
 
 ### Explicit Registry
