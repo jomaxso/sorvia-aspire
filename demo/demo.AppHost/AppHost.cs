@@ -7,9 +7,8 @@ using Scalar.Aspire;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-builder.AddDockerComposeEnvironment("demo")
-    .WithDokployDeploymentTarget();
-
+builder.AddDockerComposeEnvironment("demo");
+    // .WithDokployDeploymentTarget();
 
 var server = builder.AddCSharpApp("server", "../demo.Server")
     .WithHttpHealthCheck("/health")
