@@ -107,6 +107,8 @@ Images that already point at a pullable registry (for example Docker Hub, MCR, G
 
 On the first deploy, the auto-bootstrapped registry may need a few minutes before the `sslip.io` host, Traefik route, and Let's Encrypt certificate are all ready for authenticated pushes.
 
+Subsequent deploys are idempotent. When the registry compose service, domain, credentials, and Dokploy registry record already match the desired state, the registry compose service is not updated or redeployed. Existing applications are also only redeployed when their image/provider, registry link, command, environment variables, domains, or deployment status require it.
+
 ## Domain Management
 
 Application domains are managed automatically during publish-mode deploys.

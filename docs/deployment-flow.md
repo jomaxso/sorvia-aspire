@@ -37,9 +37,12 @@ Only runs when **no explicit container registry** is configured on the environme
 1. Derive a **sslip.io registry hostname** from the Dokploy server's IP address.
 2. Generate **registry credentials** (username = project slug, password = HMAC-SHA256 of project ID + host + API key).
 3. Create (or reuse) a Dokploy **Compose service** running `registry:2` with htpasswd auth.
-4. Deploy the compose service and create a **HTTPS domain** with Let's Encrypt.
-5. **Wait for the registry** to accept credentials (retry loop with timeout).
-6. Register (or update) the registry in Dokploy's registry list so applications can reference it.
+4. Compare the existing registry Compose file while ignoring the generated htpasswd hash value. A stable credential fingerprint still detects real credential changes.
+5. Deploy the compose service only when it is new, changed, missing a domain, or not accepting the expected credentials.
+6. Create a **HTTPS domain** with Let's Encrypt when missing.
+7. Skip the registry compose deployment when the compose service, domain, and credentials are already valid.
+8. **Wait for the registry** to accept credentials (retry loop with timeout) only after setup or repair work.
+9. Register (or update) the registry in Dokploy's registry list so applications can reference it.
 
 ## 6. Push Application Images to Registry
 
@@ -92,9 +95,11 @@ For each compute resource:
 4. **Save environment variables** to the application.
 5. **Sync domains** — derive a public hostname (prefer DNS-resolvable subdomain, fall back to sslip.io), then create or update the Dokploy domain with HTTPS on the target port. Remove domains for resources without external endpoints.
 
+Configuration writes are skipped when the existing application already has the desired Docker provider, registry link, command/args, environment variables, and domains.
+
 ## 10. Trigger Deployments
 
-For each configured application, call `DeployApplication` on the Dokploy API. This tells Dokploy to pull the Docker image and start/restart the container.
+For each configured application that changed, call `DeployApplication` on the Dokploy API. Unchanged applications whose last deployment status is already successful are skipped so Dokploy does not restart containers unnecessarily.
 
 ## 11. Print Deployment Summary
 

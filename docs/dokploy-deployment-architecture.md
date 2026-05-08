@@ -236,26 +236,31 @@ If no default registry and no per-resource registry references are configured, t
 1. Derive an `sslip.io` registry host from the Dokploy server.
 2. Generate deterministic registry credentials using project ID, host, and API key.
 3. Create or reuse a Dokploy Compose service running `registry:2`.
-4. Configure htpasswd authentication.
-5. Add an HTTPS domain for the registry.
-6. Wait until registry credentials work.
-7. Register or update the registry in Dokploy.
-8. Tag local images with the new registry prefix.
-9. Push images using Docker or Podman.
+4. Configure htpasswd authentication directly in the Compose file so the registry container receives the credentials without depending on Dokploy Compose env interpolation.
+5. Store a stable credential fingerprint next to the generated htpasswd payload. The bcrypt hash value is intentionally ignored during comparisons because it is re-salted every run.
+6. Add an HTTPS domain for the registry when missing.
+7. Deploy or redeploy the registry Compose service only when it is new, changed, missing a domain, or not accepting the expected credentials.
+8. Wait until registry credentials work after setup or repair work.
+9. Register or update the registry in Dokploy.
+10. Tag local images with the new registry prefix.
+11. Push images using Docker or Podman.
 
 ```mermaid
 flowchart TD
     A["Compute resources selected"] --> B{"Explicit registry configured?"}
     B -->|Yes| C["Use existing image references"]
     B -->|No| D["Bootstrap Dokploy project registry"]
-    D --> E["Create registry Compose service"]
-    E --> F["Add HTTPS registry domain"]
-    F --> G["Wait for registry login"]
-    G --> H["Register registry in Dokploy"]
-    H --> I["Tag local images"]
-    I --> J["Push images"]
-    C --> K["Configure Dokploy applications"]
-    J --> K
+    D --> E["Create or reuse registry Compose service"]
+    E --> F{"Compose, domain, and credentials already valid?"}
+    F -->|Yes| H["Reuse running registry"]
+    F -->|No| G["Update and deploy registry Compose service"]
+    G --> I["Wait for registry login"]
+    H --> J["Register or update registry in Dokploy"]
+    I --> J
+    J --> K["Tag local images"]
+    K --> L["Push images"]
+    C --> M["Configure Dokploy applications"]
+    L --> M
 ```
 
 The Aspire Dashboard image is already public, so it is not pushed to the auto-bootstrapped project registry.
@@ -350,15 +355,23 @@ sequenceDiagram
         Executor->>Client: Create application shell
         Client->>Dokploy: POST /api/application.create
     end
-    Executor->>Client: Save Docker provider image and credentials
-    Client->>Dokploy: POST /api/application.saveDockerProvider
-    Executor->>Client: Update command, args, registry link if needed
-    Client->>Dokploy: POST /api/application.update
-    Executor->>Client: Save environment variables
-    Client->>Dokploy: POST /api/application.saveEnvironment
+    Executor->>Client: Read current application configuration
+    Client->>Dokploy: GET /api/application.one
+    opt Provider changed
+        Executor->>Client: Save Docker provider image and credentials
+        Client->>Dokploy: POST /api/application.saveDockerProvider
+    end
+    opt Command, args, or registry link changed
+        Executor->>Client: Update command, args, registry link
+        Client->>Dokploy: POST /api/application.update
+    end
+    opt Environment variables changed
+        Executor->>Client: Save environment variables
+        Client->>Dokploy: POST /api/application.saveEnvironment
+    end
 ```
 
-Application names are sanitized from Aspire resource names so they are safe as Docker/Dokploy identifiers.
+Application names are sanitized from Aspire resource names so they are safe as Docker/Dokploy identifiers. Existing applications are reconciled in place: the executor compares the desired provider, registry link, command, args, and environment variables with the current Dokploy state and skips writes when they already match.
 
 ## Domain synchronization
 
@@ -383,7 +396,7 @@ This keeps public endpoints deterministic while still providing a fallback for s
 
 ## Deployment triggering and summary
 
-After applications are configured, the executor calls Dokploy's deploy endpoint for each application. Dokploy then pulls the configured image and starts or restarts the container.
+After applications are configured, the executor calls Dokploy's deploy endpoint only for applications that were created, changed, or are not in a successful deployment state. Unchanged applications are left running so Dokploy does not restart containers unnecessarily.
 
 Finally, the executor writes an Aspire pipeline summary containing:
 

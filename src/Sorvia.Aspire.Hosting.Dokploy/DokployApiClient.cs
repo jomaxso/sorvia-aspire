@@ -375,6 +375,19 @@ internal sealed class DokployApiClient : IDisposable
     }
 
     /// <summary>
+    /// Reads a Dokploy application including provider, environment, deployment status, and registry metadata.
+    /// GET /application.one
+    /// </summary>
+    public Task<JsonDocument> GetApplicationAsync(string applicationId, CancellationToken ct = default)
+        => GetDocumentAsync(
+            "application.one",
+            new Dictionary<string, string?>
+            {
+                ["applicationId"] = applicationId
+            },
+            ct);
+
+    /// <summary>
     /// Deletes a Dokploy application.
     /// POST /application.delete { applicationId }
     /// </summary>

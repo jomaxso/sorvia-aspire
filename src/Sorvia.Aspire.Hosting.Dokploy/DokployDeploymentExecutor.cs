@@ -73,7 +73,8 @@ public sealed partial class DokployDeploymentExecutor
         string Password,
         string HtpasswdLine,
         string? RegistryId,
-        string ComposeId);
+        string ComposeId,
+        bool CredentialsChanged);
 
     private sealed record DokployDatabaseConnection(
         string Host,
@@ -82,6 +83,10 @@ public sealed partial class DokployDeploymentExecutor
         string? Username,
         string? Password,
         string? ConnectionString);
+
+    private sealed record DokployApplicationShell(
+        DokployApplication Application,
+        bool Created);
 
     /// <summary>
     /// Resolves the server URL from the generated parameter or an explicit override.
@@ -257,7 +262,7 @@ public sealed partial class DokployDeploymentExecutor
         var hostnames = BuildHostnameMapping(context.Model, databaseConnections);
         var endpointPorts = BuildEndpointPortOverrides(databaseConnections);
 
-        var configuredApplications = new List<(IResource Resource, DokployApplication Application)>(computeResources.Count);
+        var configuredApplications = new List<(IResource Resource, DokployApplication Application, bool Created, bool Changed)>(computeResources.Count);
 
         var appTask = await context.ReportingStep.CreateTaskAsync(
             $"Configuring {computeResources.Count} application(s) in Dokploy", ct).ConfigureAwait(false);
@@ -268,7 +273,7 @@ public sealed partial class DokployDeploymentExecutor
             {
                 foreach (var resource in computeResources)
                 {
-                    var application = await EnsureApplicationShellAsync(
+                    var shell = await EnsureApplicationShellAsync(
                         context,
                         client,
                         resource,
@@ -276,12 +281,13 @@ public sealed partial class DokployDeploymentExecutor
                         hostnames,
                         ct).ConfigureAwait(false);
 
-                    configuredApplications.Add((resource, application));
+                    configuredApplications.Add((resource, shell.Application, shell.Created, Changed: shell.Created));
                 }
 
-                foreach (var (resource, application) in configuredApplications)
+                for (var i = 0; i < configuredApplications.Count; i++)
                 {
-                    await ConfigureApplicationAsync(
+                    var (resource, application, created, _) = configuredApplications[i];
+                    var changed = await ConfigureApplicationAsync(
                         this,
                         context,
                         client,
@@ -294,6 +300,8 @@ public sealed partial class DokployDeploymentExecutor
                         databaseConnections,
                         autoRegistry,
                         ct).ConfigureAwait(false);
+
+                    configuredApplications[i] = (resource, application, created, created || changed);
                 }
 
                 await appTask.CompleteAsync(
@@ -316,13 +324,26 @@ public sealed partial class DokployDeploymentExecutor
         {
             try
             {
-                foreach (var (resource, application) in configuredApplications)
+                var deployedCount = 0;
+                var skippedCount = 0;
+                foreach (var (resource, application, _, changed) in configuredApplications)
                 {
-                    await TriggerApplicationDeploymentAsync(context, client, resource, application, ct).ConfigureAwait(false);
+                    if (await ShouldDeployApplicationAsync(client, application, changed, ct).ConfigureAwait(false))
+                    {
+                        await TriggerApplicationDeploymentAsync(context, client, resource, application, ct).ConfigureAwait(false);
+                        deployedCount++;
+                    }
+                    else
+                    {
+                        context.Logger.LogInformation(
+                            "Skipping Dokploy deployment for application '{AppName}' because configuration is unchanged.",
+                            application.AppName);
+                        skippedCount++;
+                    }
                 }
 
                 await deployTask.CompleteAsync(
-                    $"Deployed {configuredApplications.Count} application(s)",
+                    $"Deployed {deployedCount} application(s), skipped {skippedCount} unchanged application(s)",
                     CompletionState.Completed,
                     ct).ConfigureAwait(false);
             }
@@ -338,7 +359,7 @@ public sealed partial class DokployDeploymentExecutor
 
         var applicationSummaryEntries = new List<(string ResourceName, string Links)>(configuredApplications.Count);
 
-        foreach (var (resource, application) in configuredApplications)
+        foreach (var (resource, application, _, _) in configuredApplications)
         {
             if (GetManagedApplicationDomainEndpoint(resource) is null)
             {
@@ -587,7 +608,7 @@ public sealed partial class DokployDeploymentExecutor
     /// 3. Resolve and save environment variables
     /// 4. Trigger deployment
     /// </summary>
-    private static async Task<DokployApplication> EnsureApplicationShellAsync(
+    private static async Task<DokployApplicationShell> EnsureApplicationShellAsync(
         PipelineStepContext context,
         DokployApiClient client,
         IResource resource,
@@ -610,12 +631,14 @@ public sealed partial class DokployDeploymentExecutor
             application => application.CreatedAt,
             context.Logger,
             "application");
+        var created = false;
 
         if (app is null)
         {
             app = await client.CreateApplicationAsync(
                 appName, environmentId, appName: appName, description: description, ct: ct).ConfigureAwait(false);
             context.Logger.LogInformation("Created Dokploy application '{AppName}' (ID: {AppId})", app.AppName, app.ApplicationId);
+            created = true;
         }
         else
         {
@@ -623,10 +646,10 @@ public sealed partial class DokployDeploymentExecutor
         }
 
         hostnames[resource] = app.AppName;
-        return app;
+        return new DokployApplicationShell(app, created);
     }
 
-    private static async Task ConfigureApplicationAsync(
+    private static async Task<bool> ConfigureApplicationAsync(
         DokployDeploymentExecutor environment,
         PipelineStepContext context,
         DokployApiClient client,
@@ -641,6 +664,9 @@ public sealed partial class DokployDeploymentExecutor
         CancellationToken ct)
     {
         context.Logger.LogInformation("Configuring Dokploy application '{AppName}' for resource '{ResourceName}'...", app.AppName, resource.Name);
+        var changed = false;
+        using var currentApplication = await client.GetApplicationAsync(app.ApplicationId, ct).ConfigureAwait(false);
+        var currentApplicationRoot = currentApplication.RootElement;
 
         // 2. Set Docker image source
         var dockerImage = await environment.ResolveApplicationDockerImageAsync(resource, autoRegistry, ct).ConfigureAwait(false);
@@ -651,41 +677,70 @@ public sealed partial class DokployDeploymentExecutor
 
         if (dockerImage is not null)
         {
-            await client.SaveDockerProviderAsync(
-                app.ApplicationId, dockerImage,
-                username: usesProjectRegistry ? autoRegistry?.Username : null,
-                password: usesProjectRegistry ? autoRegistry?.Password : null,
-                registryUrl: usesProjectRegistry ? autoRegistry?.RegistryUrl : null,
-                ct: ct).ConfigureAwait(false);
-            context.Logger.LogInformation("Set Docker image '{Image}' for application '{AppName}'", dockerImage, app.AppName);
+            var desiredRegistryUrl = usesProjectRegistry ? autoRegistry?.RegistryUrl : null;
+            if (autoRegistry?.CredentialsChanged == true
+                || !JsonStringEquals(currentApplicationRoot, "dockerImage", dockerImage)
+                || !JsonStringEquals(currentApplicationRoot, "registryUrl", desiredRegistryUrl)
+                || !JsonStringEquals(currentApplicationRoot, "sourceType", "docker"))
+            {
+                await client.SaveDockerProviderAsync(
+                    app.ApplicationId, dockerImage,
+                    username: usesProjectRegistry ? autoRegistry?.Username : null,
+                    password: usesProjectRegistry ? autoRegistry?.Password : null,
+                    registryUrl: desiredRegistryUrl,
+                    ct: ct).ConfigureAwait(false);
+                context.Logger.LogInformation("Set Docker image '{Image}' for application '{AppName}'", dockerImage, app.AppName);
+                changed = true;
+            }
+            else
+            {
+                context.Logger.LogInformation(
+                    "Docker image provider for application '{AppName}' is unchanged.",
+                    app.AppName);
+            }
         }
 
+        var command = environment.GetApplicationCommand(resource);
+        var args = environment.GetApplicationArgs(resource);
         if (usesProjectRegistry && autoRegistry?.RegistryId is not null)
         {
-            var command = environment.GetApplicationCommand(resource);
-            var args = environment.GetApplicationArgs(resource);
-            await client.UpdateApplicationAsync(
-                app.ApplicationId,
-                registryId: autoRegistry.RegistryId,
-                command: command,
-                args: args,
-                ct: ct).ConfigureAwait(false);
-            context.Logger.LogInformation(
-                "Linked Dokploy registry '{RegistryId}' to application '{AppName}'",
-                autoRegistry.RegistryId,
-                app.AppName);
+            if (!JsonStringEquals(currentApplicationRoot, "registryId", autoRegistry.RegistryId)
+                || !JsonStringEquals(currentApplicationRoot, "command", command)
+                || !JsonStringArrayEquals(currentApplicationRoot, "args", args))
+            {
+                await client.UpdateApplicationAsync(
+                    app.ApplicationId,
+                    registryId: autoRegistry.RegistryId,
+                    command: command,
+                    args: args,
+                    ct: ct).ConfigureAwait(false);
+                context.Logger.LogInformation(
+                    "Updated application '{AppName}' registry, command, or args.",
+                    app.AppName);
+                changed = true;
+            }
+            else
+            {
+                context.Logger.LogInformation(
+                    "Application '{AppName}' registry, command, and args are unchanged.",
+                    app.AppName);
+            }
         }
         else
         {
-            var command = environment.GetApplicationCommand(resource);
-            var args = environment.GetApplicationArgs(resource);
-            if (command is not null || args is not null)
+            if ((command is not null || args is not null)
+                && (!JsonStringEquals(currentApplicationRoot, "command", command)
+                    || !JsonStringArrayEquals(currentApplicationRoot, "args", args)))
             {
                 await client.UpdateApplicationAsync(
                     app.ApplicationId,
                     command: command,
                     args: args,
                     ct: ct).ConfigureAwait(false);
+                context.Logger.LogInformation(
+                    "Updated application '{AppName}' command or args.",
+                    app.AppName);
+                changed = true;
             }
         }
 
@@ -695,12 +750,22 @@ public sealed partial class DokployDeploymentExecutor
         context.Logger.LogInformation("Resolved {Count} environment variable(s) for '{ResourceName}'", envVars.Count, resource.Name);
         if (envVars.Count > 0)
         {
-            var envString = string.Join("\n", envVars.Select(kv => $"{kv.Key}={kv.Value}"));
-            await client.SaveApplicationEnvironmentAsync(app.ApplicationId, envString, ct: ct).ConfigureAwait(false);
-            context.Logger.LogInformation("Saved {Count} env var(s) for application '{AppName}'", envVars.Count, app.AppName);
+            var envString = BuildEnvironmentString(envVars);
+            if (!JsonMultilineStringEquals(currentApplicationRoot, "env", envString))
+            {
+                await client.SaveApplicationEnvironmentAsync(app.ApplicationId, envString, ct: ct).ConfigureAwait(false);
+                context.Logger.LogInformation("Saved {Count} env var(s) for application '{AppName}'", envVars.Count, app.AppName);
+                changed = true;
+            }
+            else
+            {
+                context.Logger.LogInformation(
+                    "Environment variables for application '{AppName}' are unchanged.",
+                    app.AppName);
+            }
         }
 
-        await SyncApplicationDomainsAsync(
+        changed |= await SyncApplicationDomainsAsync(
             client,
             resource,
             app,
@@ -710,7 +775,7 @@ public sealed partial class DokployDeploymentExecutor
             context.Logger,
             ct).ConfigureAwait(false);
 
-        return;
+        return changed;
     }
 
     private static async Task TriggerApplicationDeploymentAsync(
@@ -726,6 +791,24 @@ public sealed partial class DokployDeploymentExecutor
             description: $"Deployed from Aspire AppHost at {DateTime.UtcNow:O}",
             ct: ct).ConfigureAwait(false);
         context.Logger.LogInformation("Triggered deployment for application '{AppName}'", app.AppName);
+    }
+
+    private static async Task<bool> ShouldDeployApplicationAsync(
+        DokployApiClient client,
+        DokployApplication app,
+        bool configurationChanged,
+        CancellationToken ct)
+    {
+        if (configurationChanged)
+        {
+            return true;
+        }
+
+        using var document = await client.GetApplicationAsync(app.ApplicationId, ct).ConfigureAwait(false);
+        var status = FindFirstString(document.RootElement, "applicationStatus");
+        return !string.IsNullOrWhiteSpace(status)
+               && !string.Equals(status, "done", StringComparison.OrdinalIgnoreCase)
+               && !string.Equals(status, "running", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool TryGetPublishedComposeService(IResource resource, out DokployPublishedComposeService service)
@@ -815,7 +898,7 @@ public sealed partial class DokployDeploymentExecutor
         return resolvedImage is null ? null : BuildProjectRegistryImage(resolvedImage.Image, autoRegistry);
     }
 
-    private static async Task SyncApplicationDomainsAsync(
+    private static async Task<bool> SyncApplicationDomainsAsync(
         DokployApiClient client,
         IResource resource,
         DokployApplication application,
@@ -828,8 +911,7 @@ public sealed partial class DokployDeploymentExecutor
         var endpoint = GetManagedApplicationDomainEndpoint(resource);
         if (endpoint is null)
         {
-            await RemoveApplicationDomainsAsync(client, application.ApplicationId, logger, ct).ConfigureAwait(false);
-            return;
+            return await RemoveApplicationDomainsAsync(client, application.ApplicationId, logger, ct).ConfigureAwait(false) > 0;
         }
 
         var projectSlug = SanitizeName(projectName);
@@ -842,7 +924,7 @@ public sealed partial class DokployDeploymentExecutor
         var existingHosts = await GetApplicationDomainHostsAsync(client, application.ApplicationId, ct).ConfigureAwait(false);
         if (existingHosts.Contains(applicationHost, StringComparer.OrdinalIgnoreCase))
         {
-            return;
+            return false;
         }
 
         var targetPort = GetEndpointPort(resource, endpoint.Name, endpointPorts);
@@ -857,6 +939,7 @@ public sealed partial class DokployDeploymentExecutor
             applicationHost,
             application.AppName,
             targetPort);
+        return true;
     }
 
     private static EndpointAnnotation? GetManagedApplicationDomainEndpoint(IResource resource)
@@ -903,13 +986,14 @@ public sealed partial class DokployDeploymentExecutor
         }
     }
 
-    private static async Task RemoveApplicationDomainsAsync(
+    private static async Task<int> RemoveApplicationDomainsAsync(
         DokployApiClient client,
         string applicationId,
         ILogger logger,
         CancellationToken ct)
     {
         var domains = await GetApplicationDomainsAsync(client, applicationId, ct).ConfigureAwait(false);
+        var removed = 0;
         foreach (var domain in domains)
         {
             if (string.IsNullOrWhiteSpace(domain.DomainId))
@@ -919,7 +1003,10 @@ public sealed partial class DokployDeploymentExecutor
 
             await client.DeleteDomainAsync(domain.DomainId, ct).ConfigureAwait(false);
             logger.LogInformation("Removed Dokploy domain '{Host}' (ID: {DomainId})", domain.Host, domain.DomainId);
+            removed++;
         }
+
+        return removed;
     }
 
     private static IReadOnlyList<IResource> GetDestroyComputeResources(
@@ -1370,6 +1457,8 @@ public sealed partial class DokployDeploymentExecutor
         var password = GenerateRegistryPassword(project.ProjectId, registryHost, apiKey);
         var htpasswdLine = $"{username}:{BCrypt.Net.BCrypt.HashPassword(password)}";
         var htpasswdPayload = Convert.ToBase64String(Encoding.UTF8.GetBytes(htpasswdLine));
+        var credentialFingerprint = CreateRegistryCredentialFingerprint(username, password);
+        var composeFile = BuildRegistryComposeFile(htpasswdPayload, credentialFingerprint);
 
         var registryTask = await context.ReportingStep.CreateTaskAsync(
             $"Bootstrapping project registry '{registryHost}'", ct).ConfigureAwait(false);
@@ -1387,16 +1476,11 @@ public sealed partial class DokployDeploymentExecutor
                     context.Logger,
                     "compose service");
 
+                var composeCreated = existingCompose is null;
                 var compose = existingCompose ?? await client.CreateComposeAsync(
                     composeName,
                     projectEnvironment.EnvironmentId,
                     description: $"Private registry for Dokploy project {project.Name}",
-                    ct: ct).ConfigureAwait(false);
-
-                await client.UpdateComposeAsync(
-                    compose.ComposeId,
-                    BuildRegistryComposeFile(),
-                    env: $"REGISTRY_AUTH_HTPASSWD_B64={htpasswdPayload}",
                     ct: ct).ConfigureAwait(false);
 
                 if (existingCompose is null)
@@ -1408,9 +1492,45 @@ public sealed partial class DokployDeploymentExecutor
                     context.Logger.LogInformation("Reusing Dokploy compose service '{ComposeName}' (ID: {ComposeId})", composeName, compose.ComposeId);
                 }
 
-                await client.DeployComposeAsync(compose.ComposeId, ct).ConfigureAwait(false);
+                var hasRegistryDomain = await ComposeHasDomainAsync(client, compose.ComposeId, registryHost, ct).ConfigureAwait(false);
+                var registryProbe = existingCompose is not null && hasRegistryDomain
+                    ? await ProbeRegistryCredentialsOnceAsync(registryHost, username, password, ct).ConfigureAwait(false)
+                    : new RegistryProbeResult(false, "registry compose service or domain is not fully configured yet.");
+                var composeMatches = existingCompose is not null
+                    && await RegistryComposeMatchesAsync(client, compose.ComposeId, composeFile, ct).ConfigureAwait(false);
+                var composeChanged = composeCreated || !composeMatches;
+                var deployedCompose = false;
 
-                if (!await ComposeHasDomainAsync(client, compose.ComposeId, registryHost, ct).ConfigureAwait(false))
+                if (composeChanged)
+                {
+                    await client.UpdateComposeAsync(
+                        compose.ComposeId,
+                        composeFile,
+                        ct: ct).ConfigureAwait(false);
+                    context.Logger.LogInformation(
+                        "Updated Dokploy registry compose service '{ComposeName}' because its configuration changed.",
+                        composeName);
+                }
+                else
+                {
+                    context.Logger.LogInformation(
+                        "Dokploy registry compose service '{ComposeName}' configuration is unchanged.",
+                        composeName);
+                }
+
+                if (composeChanged || !registryProbe.IsReady)
+                {
+                    await client.DeployComposeAsync(compose.ComposeId, ct).ConfigureAwait(false);
+                    deployedCompose = true;
+                }
+                else
+                {
+                    context.Logger.LogInformation(
+                        "Skipping Dokploy registry compose deployment because '{RegistryHost}' already accepts the expected credentials.",
+                        registryHost);
+                }
+
+                if (!hasRegistryDomain)
                 {
                     try
                     {
@@ -1428,6 +1548,7 @@ public sealed partial class DokployDeploymentExecutor
                             composeName);
 
                         await client.DeployComposeAsync(compose.ComposeId, ct).ConfigureAwait(false);
+                        deployedCompose = true;
                         context.Logger.LogInformation(
                             "Redeployed compose '{ComposeName}' after adding registry domain '{RegistryHost}' so Traefik picks up the new route.",
                             composeName,
@@ -1451,11 +1572,14 @@ public sealed partial class DokployDeploymentExecutor
 
                 var registryUrl = registryHost;
 
-                await WaitForRegistryCredentialsAsync(
-                    registryHost,
-                    username,
-                    password,
-                    ct).ConfigureAwait(false);
+                if (!registryProbe.IsReady || composeChanged || deployedCompose || !hasRegistryDomain)
+                {
+                    await WaitForRegistryCredentialsAsync(
+                        registryHost,
+                        username,
+                        password,
+                        ct).ConfigureAwait(false);
+                }
 
                 var registries = await client.ListRegistriesAsync(ct).ConfigureAwait(false);
                 var existingRegistry = registries.FirstOrDefault(registry =>
@@ -1476,14 +1600,15 @@ public sealed partial class DokployDeploymentExecutor
                     existingRegistry = registries.FirstOrDefault(registry =>
                         string.Equals(registry.RegistryUrl, registryUrl, StringComparison.OrdinalIgnoreCase)
                         || string.Equals(registry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase));
+                    composeChanged = true;
                 }
                 else
                 {
-                    var desiredImagePrefix = existingRegistry.ImagePrefix ?? projectSlug;
+                    var desiredImagePrefix = projectSlug;
                     var registryMatches =
                         string.Equals(existingRegistry.RegistryName, registryName, StringComparison.OrdinalIgnoreCase)
                         && string.Equals(existingRegistry.RegistryUrl, registryUrl, StringComparison.OrdinalIgnoreCase)
-                        && string.Equals(existingRegistry.ImagePrefix ?? projectSlug, desiredImagePrefix, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(existingRegistry.ImagePrefix, desiredImagePrefix, StringComparison.OrdinalIgnoreCase)
                         && string.Equals(existingRegistry.Username ?? username, username, StringComparison.Ordinal)
                         && string.Equals(existingRegistry.Password ?? password, password, StringComparison.Ordinal);
 
@@ -1504,6 +1629,7 @@ public sealed partial class DokployDeploymentExecutor
                             registryUrl,
                             imagePrefix: desiredImagePrefix,
                             ct: ct).ConfigureAwait(false);
+                        composeChanged = true;
                     }
                 }
 
@@ -1522,7 +1648,8 @@ public sealed partial class DokployDeploymentExecutor
                     password,
                     htpasswdLine,
                     existingRegistry?.RegistryId,
-                    compose.ComposeId);
+                    compose.ComposeId,
+                    composeChanged);
             }
             catch (Exception ex)
             {
@@ -1872,7 +1999,7 @@ public sealed partial class DokployDeploymentExecutor
         return imagePart[(imagePart.LastIndexOf('/') + 1)..];
     }
 
-    private static string BuildRegistryComposeFile()
+    private static string BuildRegistryComposeFile(string htpasswdPayload, string credentialFingerprint)
     {
         var builder = new StringBuilder();
         builder.AppendLine("services:");
@@ -1887,11 +2014,11 @@ public sealed partial class DokployDeploymentExecutor
         builder.AppendLine("      REGISTRY_AUTH: \"htpasswd\"");
         builder.AppendLine("      REGISTRY_AUTH_HTPASSWD_REALM: \"Dokploy Registry\"");
         builder.AppendLine("      REGISTRY_AUTH_HTPASSWD_PATH: \"/auth/htpasswd\"");
-        builder.AppendLine("      REGISTRY_AUTH_HTPASSWD_B64: \"${REGISTRY_AUTH_HTPASSWD_B64}\"");
+        builder.AppendLine($"      SORVIA_REGISTRY_CREDENTIAL_FINGERPRINT: \"{credentialFingerprint}\"");
         builder.AppendLine("    command:");
         builder.AppendLine("      - \"/bin/sh\"");
         builder.AppendLine("      - \"-c\"");
-        builder.AppendLine("      - \"mkdir -p /auth && printf '%s' \\\"$$REGISTRY_AUTH_HTPASSWD_B64\\\" | base64 -d > /auth/htpasswd && exec /entrypoint.sh /etc/docker/registry/config.yml\"");
+        builder.AppendLine($"      - \"mkdir -p /auth && printf '%s' '{htpasswdPayload}' | base64 -d > /auth/htpasswd && exec /entrypoint.sh /etc/docker/registry/config.yml\"");
         builder.AppendLine("    volumes:");
         builder.AppendLine("      - \"registry-data:/var/lib/registry\"");
         builder.AppendLine("volumes:");
@@ -1916,6 +2043,46 @@ public sealed partial class DokployDeploymentExecutor
         }
     }
 
+    private static async Task<bool> RegistryComposeMatchesAsync(
+        DokployApiClient client,
+        string composeId,
+        string desiredComposeFile,
+        CancellationToken ct)
+    {
+        using var document = await client.GetComposeAsync(composeId, ct).ConfigureAwait(false);
+        var currentComposeFile = FindFirstString(document.RootElement, "composeFile", "dockerCompose");
+        if (string.IsNullOrWhiteSpace(currentComposeFile))
+        {
+            return false;
+        }
+
+        return string.Equals(
+            NormalizeRegistryComposeForComparison(currentComposeFile),
+            NormalizeRegistryComposeForComparison(desiredComposeFile),
+            StringComparison.Ordinal);
+    }
+
+    private static string NormalizeRegistryComposeForComparison(string composeFile)
+    {
+        var normalized = NormalizeMultiline(composeFile);
+        normalized = Regex.Replace(
+            normalized,
+            "REGISTRY_AUTH_HTPASSWD_B64:\\s*\"[^\"]*\"",
+            "REGISTRY_AUTH_HTPASSWD_B64: \"<redacted>\"",
+            RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(
+            normalized,
+            "REGISTRY_AUTH_HTPASSWD_B64=\\S+",
+            "REGISTRY_AUTH_HTPASSWD_B64=<redacted>",
+            RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(
+            normalized,
+            "printf '%s' '[^']*' \\| base64 -d",
+            "printf '%s' '<redacted>' | base64 -d",
+            RegexOptions.CultureInvariant);
+        return normalized.Trim();
+    }
+
     private static async Task<IReadOnlyList<string>> GetComposeDomainHostsAsync(
         DokployApiClient client,
         string composeId,
@@ -1933,6 +2100,20 @@ public sealed partial class DokployDeploymentExecutor
             .Cast<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static async Task<RegistryProbeResult> ProbeRegistryCredentialsOnceAsync(
+        string registryHost,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        using var httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(10)
+        };
+        httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Aspire.Hosting.Dokploy", "0.1.0"));
+        return await ProbeRegistryCredentialsAsync(httpClient, registryHost, username, password, ct).ConfigureAwait(false);
     }
 
     private static async Task WaitForRegistryCredentialsAsync(
@@ -2096,6 +2277,10 @@ public sealed partial class DokployDeploymentExecutor
         using var hmac = new HMACSHA256(keyBytes);
         return Convert.ToHexString(hmac.ComputeHash(payloadBytes)).ToLowerInvariant();
     }
+
+    private static string CreateRegistryCredentialFingerprint(string username, string password)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{username}:{password}")))
+            .ToLowerInvariant();
 
     /// <summary>
     /// Resolves all environment variables for a resource by executing the environment callbacks,
@@ -2911,6 +3096,47 @@ public sealed partial class DokployDeploymentExecutor
         }
     }
 
+    private static string BuildEnvironmentString(IReadOnlyDictionary<string, string> envVars)
+        => string.Join(
+            "\n",
+            envVars
+                .OrderBy(static kv => kv.Key, StringComparer.Ordinal)
+                .Select(static kv => $"{kv.Key}={kv.Value}"));
+
+    private static bool JsonStringEquals(JsonElement element, string propertyName, string? expected)
+        => string.Equals(
+            NormalizeOptionalString(FindFirstString(element, propertyName)),
+            NormalizeOptionalString(expected),
+            StringComparison.Ordinal);
+
+    private static bool JsonMultilineStringEquals(JsonElement element, string propertyName, string? expected)
+        => string.Equals(
+            NormalizeOptionalString(FindFirstString(element, propertyName), normalizeMultiline: true),
+            NormalizeOptionalString(expected, normalizeMultiline: true),
+            StringComparison.Ordinal);
+
+    private static bool JsonStringArrayEquals(JsonElement element, string propertyName, IReadOnlyList<string>? expected)
+    {
+        var current = FindFirstStringArray(element, propertyName);
+        var desired = expected is null or { Count: 0 } ? [] : expected.ToArray();
+        return current.SequenceEqual(desired, StringComparer.Ordinal);
+    }
+
+    private static string? NormalizeOptionalString(string? value, bool normalizeMultiline = false)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = normalizeMultiline ? NormalizeMultiline(value) : value;
+        return normalized.Trim();
+    }
+
+    private static string NormalizeMultiline(string value)
+        => value.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+
     private static string? FindFirstString(JsonElement element, params string[] propertyNames)
     {
         foreach (var propertyName in propertyNames)
@@ -2923,6 +3149,53 @@ public sealed partial class DokployDeploymentExecutor
         }
 
         return null;
+    }
+
+    private static string[] FindFirstStringArray(JsonElement element, string propertyName)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(propertyName, property.Name, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (property.Value.ValueKind == JsonValueKind.Array)
+                    {
+                        return property.Value.EnumerateArray()
+                            .Where(static item => item.ValueKind == JsonValueKind.String)
+                            .Select(static item => item.GetString())
+                            .Where(static value => value is not null)
+                            .Cast<string>()
+                            .ToArray();
+                    }
+
+                    if (property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        var value = property.Value.GetString();
+                        return string.IsNullOrWhiteSpace(value) ? [] : [value];
+                    }
+                }
+
+                var nested = FindFirstStringArray(property.Value, propertyName);
+                if (nested.Length > 0)
+                {
+                    return nested;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                var nested = FindFirstStringArray(item, propertyName);
+                if (nested.Length > 0)
+                {
+                    return nested;
+                }
+            }
+        }
+
+        return [];
     }
 
     private static string? FindFirstStringByName(JsonElement element, string propertyName)
