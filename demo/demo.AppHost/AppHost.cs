@@ -7,8 +7,26 @@ var builder = DistributedApplication.CreateBuilder(args);
 builder.AddDockerComposeEnvironment("demo")
     .WithDokployDeploymentTarget();
 
-var database = builder.AddDokployPostgres("database")
-    .AddDatabase("mydb");
+var database = builder.AddDokployPostgres("database");
+
+builder.AddPostgres("p2")
+    .PublishAsDokployDatabase();
+
+builder.AddDokployRedis("redis");
+builder.AddRedis("r2")
+    .PublishAsDokployDatabase();
+
+builder.AddDokployMySql("mysql");
+builder.AddMySql("m2")
+    .PublishAsDokployDatabase();
+
+builder.AddDokployMariaDB("maria");
+builder.AddMySql("ma2")
+    .PublishAsDokployMariaDB();
+
+builder.AddDokployMongoDB("mongodb");
+builder.AddMongoDB("mongo2")
+    .PublishAsDokployDatabase();
 
 var server = builder.AddCSharpApp("server", "../demo.Server")
     .WithReference(database)
