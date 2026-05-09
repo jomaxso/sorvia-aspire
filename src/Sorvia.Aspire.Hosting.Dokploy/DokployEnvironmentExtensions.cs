@@ -29,8 +29,8 @@ namespace Aspire.Hosting;
 ///     Docker Compose publish and prepare behavior.
 ///   </description></item>
 ///   <item><description>
-///     The deploy step validates Dokploy configuration, provisions Dokploy-native databases,
-///     and deploys application resources to Dokploy via the REST API.
+///     The deploy step validates Dokploy configuration, pushes application images and provisions
+///     Dokploy-native databases in parallel, then deploys application resources via the REST API.
 ///   </description></item>
 /// </list>
 ///
@@ -41,7 +41,7 @@ namespace Aspire.Hosting;
 /// <list type="bullet">
 ///   <item><description><c>publish-{name}</c> — Runs the exact Aspire.Hosting.Docker publish implementation. RequiredBy <c>Publish</c>.</description></item>
 ///   <item><description><c>prepare-{name}</c> — Runs the exact Aspire.Hosting.Docker prepare implementation before deployment.</description></item>
-///   <item><description><c>dokploy-validate-{name}</c> through <c>dokploy-summary-{name}</c> — Validates configuration, reconciles project state, handles registry/images/databases/applications, releases changed applications, and writes the Dokploy summary. The final summary step is RequiredBy <c>Deploy</c>.</description></item>
+///   <item><description><c>dokploy-validate-{name}</c> through <c>dokploy-summary-{name}</c> — Validates configuration, reconciles project state, handles registry, runs images/databases in parallel before applications, releases changed applications, and writes the Dokploy summary. The final summary step is RequiredBy <c>Deploy</c>.</description></item>
 ///   <item><description><c>dokploy-destroy-validate-{name}</c> through <c>dokploy-destroy-summary-{name}</c> — Resolves the destroy target, deletes Dokploy applications, native databases, auto-registry resources, removes the empty project shell, and writes the destroy summary. The final summary step is RequiredBy <c>Destroy</c>.</description></item>
 /// </list>
 ///
@@ -249,14 +249,14 @@ public static class DokployEnvironmentExtensions
                     dokployDatabasesStepName,
                     $"Provision Dokploy databases for {resource.Name}",
                     ctx => DokployDeploymentExecutor.ProvisionDokployDatabasesAsync(ctx, resource, target),
-                    [dokployImagesStepName],
+                    [dokployRegistryStepName],
                     tags: ["dokploy-deploy", "dokploy-databases"]));
                 steps.Add(CreateDokployStep(
                     resource,
                     dokployApplicationsStepName,
                     $"Configure Dokploy applications for {resource.Name}",
                     ctx => DokployDeploymentExecutor.ConfigureDokployApplicationsAsync(ctx, resource, target),
-                    [dokployDatabasesStepName],
+                    [dokployImagesStepName, dokployDatabasesStepName],
                     tags: ["dokploy-deploy", "dokploy-applications"]));
                 steps.Add(CreateDokployStep(
                     resource,

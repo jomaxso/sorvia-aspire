@@ -275,7 +275,7 @@ The integration follows the Docker Compose publisher shape from `Aspire.Hosting.
 
 1. **`publish-{name}`** — Generates Docker Compose artifacts (images, env vars, ports, volumes, service dependencies, `.env` file, Aspire Dashboard).
 2. **`prepare-{name}`** — Runs the stock Docker Compose prepare step for `.env` capture and compose preparation.
-3. **`deploy-{name}`** — Deploys to Dokploy via REST API: validates config, finds/creates a project, bootstraps a registry (if needed), provisions native databases, creates/updates applications, synchronizes domains, pushes images, and triggers deployments.
+3. **`deploy-{name}`** — Deploys to Dokploy via REST API: validates config, finds/creates a project, bootstraps a registry (if needed), pushes images and provisions native databases in parallel, creates/updates applications, synchronizes domains, and triggers deployments.
 
 The publish and prepare steps reuse `Aspire.Hosting.Docker` internals. The compose object model (`ComposeFile`, `Service`, `Network`, `Volume`) is also used for Dokploy-managed stacks such as the project registry.
 

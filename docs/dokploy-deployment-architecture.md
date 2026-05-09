@@ -71,7 +71,7 @@ The package does not reimplement the full Aspire Docker Compose publisher. Inste
 4. The extension wraps the environment's `PipelineStepAnnotation`.
 5. The wrapper removes the stock `docker-compose-up-{name}` action and replaces it with a no-op compatibility bridge of the same name.
 6. The wrapper adds named deploy phases: `dokploy-validate-{name}`, `dokploy-project-{name}`, `dokploy-registry-{name}`, `dokploy-images-{name}`, `dokploy-databases-{name}`, `dokploy-applications-{name}`, `dokploy-release-{name}`, and `dokploy-summary-{name}`.
-7. The first Dokploy deploy phase depends on `prepare-{name}`. `dokploy-images-{name}` depends on the compatibility bridge so Aspire's generated `build-*` steps still run before images are pushed. The final `dokploy-summary-{name}` phase is required by Aspire's `Deploy` step.
+7. The first Dokploy deploy phase depends on `prepare-{name}`. `dokploy-images-{name}` depends on the compatibility bridge so Aspire's generated `build-*` steps still run before images are pushed. `dokploy-databases-{name}` can run in parallel with image pushing after the project registry step, and application configuration waits for both branches. The final `dokploy-summary-{name}` phase is required by Aspire's `Deploy` step.
 8. The wrapper also removes the stock `destroy-compose-{name}` action, replaces it with a no-op compatibility bridge, and adds named destroy phases from `dokploy-destroy-validate-{name}` through `dokploy-destroy-summary-{name}`. The final destroy summary phase is required by Aspire's `Destroy` step.
 
 ```mermaid
@@ -83,8 +83,9 @@ flowchart LR
     V --> P["dokploy-project-{name}"]
     P --> R["dokploy-registry-{name}"]
     R --> I["dokploy-images-{name}"]
+    R --> DB["dokploy-databases-{name}"]
     D --> I
-    I --> DB["dokploy-databases-{name}"]
+    I --> APP
     DB --> APP["dokploy-applications-{name}"]
     APP --> REL["dokploy-release-{name}"]
     REL --> SUM["dokploy-summary-{name}"]

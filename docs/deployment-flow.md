@@ -69,6 +69,8 @@ For each compute resource (except the Aspire Dashboard):
 
 Pipeline step: `dokploy-databases-{name}`.
 
+This step depends on the project registry step and can run in parallel with `dokploy-images-{name}`. Application configuration waits for both image push and database provisioning to complete.
+
 For each resource annotated with `DokployDatabaseAnnotation`:
 
 1. Extract **credentials** (user, password, database name, Docker image) from the Aspire resource's parameters. Apply sensible defaults when not explicitly configured.
