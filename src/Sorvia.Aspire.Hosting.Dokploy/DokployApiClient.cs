@@ -209,6 +209,16 @@ internal sealed class DokployApiClient : IDisposable
         return await response.Content.ReadFromJsonAsync<DokployProject[]>(s_jsonOptions, ct) ?? [];
     }
 
+    /// <summary>
+    /// Gets the currently active Dokploy organization for the authenticated API key.
+    /// GET /organization.active
+    /// </summary>
+    public async Task<DokployOrganization?> GetActiveOrganizationAsync(CancellationToken ct = default)
+    {
+        using var response = await GetJsonAsync("organization.active", ct).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<DokployOrganization>(s_jsonOptions, ct).ConfigureAwait(false);
+    }
+
     // ── Compose endpoints ──────────────────────────────────────────────
 
     /// <summary>
@@ -216,9 +226,9 @@ internal sealed class DokployApiClient : IDisposable
     /// POST /compose.create { name, environmentId, description?, serverId? }
     /// </summary>
     public async Task<DokployCompose> CreateComposeAsync(
-        string name, string environmentId, string? description = null, string? serverId = null, CancellationToken ct = default)
+        string name, string environmentId, string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, environmentId, description, serverId };
+        var payload = new { name, environmentId, description };
         using var response = await PostJsonAsync("compose.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployCompose>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null compose service.");
@@ -237,12 +247,33 @@ internal sealed class DokployApiClient : IDisposable
 
     /// <summary>
     /// Triggers deployment of a Docker Compose service.
-    /// POST /compose.deploy { composeId }
+    /// POST /compose.deploy { composeId, title?, description? }
     /// </summary>
-    public async Task DeployComposeAsync(string composeId, CancellationToken ct = default)
+    public async Task DeployComposeAsync(
+        string composeId,
+        string? title = null,
+        string? description = null,
+        CancellationToken ct = default)
     {
-        var payload = new { composeId };
-        using var _ = await PostJsonAsync("compose.deploy", payload, ct: ct).ConfigureAwait(false);
+        var payload = new { composeId, title, description };
+        using var _ = await PostJsonAsync("compose.deploy", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads deployment records for a compose service.
+    /// GET /deployment.allByCompose
+    /// </summary>
+    public async Task<DokployDeployment[]> GetComposeDeploymentsAsync(string composeId, CancellationToken ct = default)
+    {
+        using var response = await GetJsonAsync(
+            BuildPath(
+                "deployment.allByCompose",
+                new Dictionary<string, string?>
+                {
+                    ["composeId"] = composeId
+                }),
+            ct).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<DokployDeployment[]>(s_jsonOptions, ct).ConfigureAwait(false) ?? [];
     }
 
     /// <summary>
@@ -279,6 +310,16 @@ internal sealed class DokployApiClient : IDisposable
             },
             ct);
 
+    /// <summary>
+    /// Deletes a Dokploy compose service and optionally its Docker volumes.
+    /// POST /compose.delete { composeId, deleteVolumes }
+    /// </summary>
+    public async Task DeleteComposeAsync(string composeId, bool deleteVolumes, CancellationToken ct = default)
+    {
+        var payload = new { composeId, deleteVolumes };
+        using var _ = await PostJsonAsync("compose.delete", payload, ct: ct).ConfigureAwait(false);
+    }
+
     // ── Application endpoints ──────────────────────────────────────────
 
     /// <summary>
@@ -286,9 +327,9 @@ internal sealed class DokployApiClient : IDisposable
     /// POST /application.create { name, environmentId, description?, serverId? }
     /// </summary>
     public async Task<DokployApplication> CreateApplicationAsync(
-        string name, string environmentId, string? appName = null, string? description = null, string? serverId = null, CancellationToken ct = default)
+        string name, string environmentId, string? appName = null, string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, environmentId, description, serverId };
+        var payload = new { name, appName, environmentId, description };
         using var response = await PostJsonAsync("application.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployApplication>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null application.");
@@ -354,6 +395,29 @@ internal sealed class DokployApiClient : IDisposable
         using var _ = await PostJsonAsync("application.deploy", payload, ct: ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Reads a Dokploy application including provider, environment, deployment status, and registry metadata.
+    /// GET /application.one
+    /// </summary>
+    public Task<JsonDocument> GetApplicationAsync(string applicationId, CancellationToken ct = default)
+        => GetDocumentAsync(
+            "application.one",
+            new Dictionary<string, string?>
+            {
+                ["applicationId"] = applicationId
+            },
+            ct);
+
+    /// <summary>
+    /// Deletes a Dokploy application.
+    /// POST /application.delete { applicationId }
+    /// </summary>
+    public async Task DeleteApplicationAsync(string applicationId, CancellationToken ct = default)
+    {
+        var payload = new { applicationId };
+        using var _ = await PostJsonAsync("application.delete", payload, ct: ct).ConfigureAwait(false);
+    }
+
     // ── Postgres endpoints ─────────────────────────────────────────────
 
     /// <summary>
@@ -363,9 +427,9 @@ internal sealed class DokployApiClient : IDisposable
     public async Task<DokployPostgres> CreatePostgresAsync(
         string name, string environmentId, string? appName = null, string? databaseName = null, string? databaseUser = null,
         string? databasePassword = null, string? dockerImage = null, string? description = null,
-        string? serverId = null, CancellationToken ct = default)
+         CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseName, databaseUser, databasePassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseName, databaseUser, databasePassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("postgres.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployPostgres>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null postgres instance.");
@@ -417,9 +481,9 @@ internal sealed class DokployApiClient : IDisposable
     /// </summary>
     public async Task<DokployRedis> CreateRedisAsync(
         string name, string environmentId, string? appName = null, string? databasePassword = null, string? dockerImage = null,
-        string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databasePassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databasePassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("redis.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployRedis>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null redis instance.");
@@ -455,9 +519,9 @@ internal sealed class DokployApiClient : IDisposable
     public async Task<DokployMySql> CreateMySqlAsync(
         string name, string environmentId, string? appName = null, string? databaseName = null, string? databaseUser = null,
         string? databasePassword = null, string? databaseRootPassword = null, string? dockerImage = null,
-        string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("mysql.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployMySql>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null mysql instance.");
@@ -493,9 +557,9 @@ internal sealed class DokployApiClient : IDisposable
     public async Task<DokployMariaDB> CreateMariaDBAsync(
         string name, string environmentId, string? appName = null, string? databaseName = null, string? databaseUser = null,
         string? databasePassword = null, string? databaseRootPassword = null, string? dockerImage = null,
-        string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseName, databaseUser, databasePassword, databaseRootPassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("mariadb.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployMariaDB>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null mariadb instance.");
@@ -530,9 +594,9 @@ internal sealed class DokployApiClient : IDisposable
     /// </summary>
     public async Task<DokployMongo> CreateMongoAsync(
         string name, string environmentId, string? appName = null, string? databaseUser = null, string? databasePassword = null,
-        string? dockerImage = null, string? description = null, string? serverId = null, CancellationToken ct = default)
+        string? dockerImage = null, string? description = null,  CancellationToken ct = default)
     {
-        var payload = new { name, appName, databaseUser, databasePassword, dockerImage, environmentId, description, serverId };
+        var payload = new { name, appName, databaseUser, databasePassword, dockerImage, environmentId, description };
         using var response = await PostJsonAsync("mongo.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployMongo>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null mongo instance.");
@@ -587,9 +651,9 @@ internal sealed class DokployApiClient : IDisposable
     /// </summary>
     public async Task<DokployRegistry> CreateRegistryAsync(
         string registryName, string username, string password, string registryUrl,
-        string? imagePrefix = null, string? serverId = null, CancellationToken ct = default)
+        string? imagePrefix = null,  CancellationToken ct = default)
     {
-        var payload = new { registryName, username, password, registryUrl, registryType = "cloud", imagePrefix, serverId };
+        var payload = new { registryName, username, password, registryUrl, registryType = "cloud", imagePrefix };
         using var response = await PostJsonAsync("registry.create", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployRegistry>(s_jsonOptions, ct).ConfigureAwait(false)
             ?? new DokployRegistry
@@ -621,7 +685,7 @@ internal sealed class DokployApiClient : IDisposable
         string password,
         string registryUrl,
         string? imagePrefix = null,
-        string? serverId = null,
+        
         CancellationToken ct = default)
     {
         var payload = new
@@ -632,8 +696,7 @@ internal sealed class DokployApiClient : IDisposable
             password,
             registryUrl,
             registryType = "cloud",
-            imagePrefix,
-            serverId
+            imagePrefix
         };
 
         using var _ = await PostJsonAsync("registry.update", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
@@ -690,6 +753,42 @@ internal sealed class DokployApiClient : IDisposable
         using var response = await PostJsonAsync("domain.create", payload, ct: ct).ConfigureAwait(false);
         return await response.Content.ReadFromJsonAsync<DokployDomain>(s_jsonOptions, ct)
             ?? throw new InvalidOperationException("Dokploy returned null compose domain.");
+    }
+
+    /// <summary>
+    /// Updates an existing domain/routing rule.
+    /// POST /domain.update { domainId, host, port?, serviceName?, domainType?, https, certificateType? }
+    /// </summary>
+    public async Task<DokployDomain> UpdateDomainAsync(
+        string domainId,
+        string host,
+        int port,
+        bool https,
+        string certificateType,
+        string? serviceName = null,
+        string? domainType = null,
+        string path = "/",
+        string internalPath = "/",
+        bool stripPath = false,
+        CancellationToken ct = default)
+    {
+        var payload = new
+        {
+            domainId,
+            host,
+            port,
+            serviceName,
+            domainType,
+            https,
+            certificateType,
+            path,
+            internalPath,
+            stripPath
+        };
+
+        using var response = await PostJsonAsync("domain.update", payload, s_jsonOptionsSkipNull, ct).ConfigureAwait(false);
+        return await response.Content.ReadFromJsonAsync<DokployDomain>(s_jsonOptions, ct)
+            ?? throw new InvalidOperationException("Dokploy returned null updated domain.");
     }
 
     /// <summary>
@@ -775,6 +874,16 @@ internal sealed class DokployApiClient : IDisposable
     }
 
     /// <summary>
+    /// Removes a Redis database.
+    /// POST /redis.remove { redisId }
+    /// </summary>
+    public async Task RemoveRedisAsync(string redisId, CancellationToken ct = default)
+    {
+        var payload = new { redisId };
+        using var _ = await PostJsonAsync("redis.remove", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Triggers deployment of a MySQL database.
     /// POST /mysql.deploy { mysqlId }
     /// </summary>
@@ -782,6 +891,16 @@ internal sealed class DokployApiClient : IDisposable
     {
         var payload = new { mysqlId };
         using var _ = await PostJsonAsync("mysql.deploy", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a MySQL database.
+    /// POST /mysql.remove { mysqlId }
+    /// </summary>
+    public async Task RemoveMySqlAsync(string mysqlId, CancellationToken ct = default)
+    {
+        var payload = new { mysqlId };
+        using var _ = await PostJsonAsync("mysql.remove", payload, ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -795,6 +914,16 @@ internal sealed class DokployApiClient : IDisposable
     }
 
     /// <summary>
+    /// Removes a MariaDB database.
+    /// POST /mariadb.remove { mariadbId }
+    /// </summary>
+    public async Task RemoveMariaDBAsync(string mariadbId, CancellationToken ct = default)
+    {
+        var payload = new { mariadbId };
+        using var _ = await PostJsonAsync("mariadb.remove", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Triggers deployment of a MongoDB instance.
     /// POST /mongo.deploy { mongoId }
     /// </summary>
@@ -802,6 +931,16 @@ internal sealed class DokployApiClient : IDisposable
     {
         var payload = new { mongoId };
         using var _ = await PostJsonAsync("mongo.deploy", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a MongoDB database.
+    /// POST /mongo.remove { mongoId }
+    /// </summary>
+    public async Task RemoveMongoAsync(string mongoId, CancellationToken ct = default)
+    {
+        var payload = new { mongoId };
+        using var _ = await PostJsonAsync("mongo.remove", payload, ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>Reads a Dokploy PostgreSQL instance.</summary>
@@ -824,6 +963,30 @@ internal sealed class DokployApiClient : IDisposable
     public Task<JsonDocument> GetMongoAsync(string mongoId, CancellationToken ct = default)
         => GetDocumentAsync("mongo.one", new Dictionary<string, string?> { ["mongoId"] = mongoId }, ct);
 
+    /// <summary>Reads a Dokploy project with environments and services.</summary>
+    public Task<JsonDocument> GetProjectAsync(string projectId, CancellationToken ct = default)
+        => GetDocumentAsync("project.one", new Dictionary<string, string?> { ["projectId"] = projectId }, ct);
+
+    /// <summary>
+    /// Removes a Dokploy project.
+    /// POST /project.remove { projectId }
+    /// </summary>
+    public async Task RemoveProjectAsync(string projectId, CancellationToken ct = default)
+    {
+        var payload = new { projectId };
+        using var _ = await PostJsonAsync("project.remove", payload, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a Dokploy registry.
+    /// POST /registry.remove { registryId }
+    /// </summary>
+    public async Task RemoveRegistryAsync(string registryId, CancellationToken ct = default)
+    {
+        var payload = new { registryId };
+        using var _ = await PostJsonAsync("registry.remove", payload, ct: ct).ConfigureAwait(false);
+    }
+
     public void Dispose() => _httpClient.Dispose();
 }
 
@@ -835,11 +998,24 @@ internal sealed record DokployProject
     [JsonPropertyName("projectId")]
     public string ProjectId { get; init; } = "";
 
+    [JsonPropertyName("organizationId")]
+    public string? OrganizationId { get; init; }
+
     [JsonPropertyName("name")]
     public string Name { get; init; } = "";
 
     [JsonPropertyName("environments")]
     public DokployProjectEnvironment[]? Environments { get; init; }
+}
+
+/// <summary>The active Dokploy organization for the authenticated API key.</summary>
+internal sealed record DokployOrganization
+{
+    [JsonPropertyName("organizationId")]
+    public string OrganizationId { get; init; } = "";
+
+    [JsonPropertyName("name")]
+    public string Name { get; init; } = "";
 }
 
 /// <summary>
@@ -885,6 +1061,34 @@ internal sealed record DokployCompose
 
     [JsonPropertyName("createdAt")]
     public DateTimeOffset? CreatedAt { get; init; }
+}
+
+/// <summary>Dokploy deployment record, returned from deployment.allByCompose.</summary>
+internal sealed record DokployDeployment
+{
+    [JsonPropertyName("deploymentId")]
+    public string DeploymentId { get; init; } = "";
+
+    [JsonPropertyName("title")]
+    public string Title { get; init; } = "";
+
+    [JsonPropertyName("description")]
+    public string? Description { get; init; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
+
+    [JsonPropertyName("createdAt")]
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    [JsonPropertyName("startedAt")]
+    public DateTimeOffset? StartedAt { get; init; }
+
+    [JsonPropertyName("finishedAt")]
+    public DateTimeOffset? FinishedAt { get; init; }
+
+    [JsonPropertyName("errorMessage")]
+    public string? ErrorMessage { get; init; }
 }
 
 /// <summary>Dokploy application, returned from application.create.</summary>
@@ -1019,4 +1223,19 @@ internal sealed record DokployDomain
 
     [JsonPropertyName("host")]
     public string Host { get; init; } = "";
+
+    [JsonPropertyName("https")]
+    public bool? Https { get; init; }
+
+    [JsonPropertyName("port")]
+    public int? Port { get; init; }
+
+    [JsonPropertyName("serviceName")]
+    public string? ServiceName { get; init; }
+
+    [JsonPropertyName("domainType")]
+    public string? DomainType { get; init; }
+
+    [JsonPropertyName("certificateType")]
+    public string? CertificateType { get; init; }
 }

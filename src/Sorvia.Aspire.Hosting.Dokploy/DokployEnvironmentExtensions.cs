@@ -1,13 +1,12 @@
 #pragma warning disable ASPIREINTERACTION001 // This type is used for interaction with the Dokploy REST API and is not intended for direct use by application code. Suppress this diagnostic to proceed.
 #pragma warning disable ASPIREATS001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+#pragma warning disable ASPIREPIPELINES001 // Custom deployment target replaces the stock Docker Compose deploy/destroy steps.
 
 using Aspire.Hosting.ApplicationModel;
 using Aspire.Hosting.Docker;
 using Aspire.Hosting.Dokploy;
 using Aspire.Hosting.Lifecycle;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using System.Reflection;
+using Aspire.Hosting.Pipelines;
 
 namespace Aspire.Hosting;
 
@@ -22,16 +21,16 @@ namespace Aspire.Hosting;
 /// <para><b>How it works:</b></para>
 /// <list type="number">
 ///   <item><description>
-///     <see cref="AddDokployEnvironment"/> registers a <see cref="DokployEnvironmentResource"/>
-///     as the deployment target in the Aspire model.
+///     <see cref="AddDokployEnvironment"/> creates a Docker Compose publishing environment
+///     and configures its deployment target for Dokploy.
 ///   </description></item>
 ///   <item><description>
 ///     When the AppHost runs in publish mode, the resource reuses Aspire.Hosting.Docker's
 ///     Docker Compose publish and prepare behavior.
 ///   </description></item>
 ///   <item><description>
-///     The deploy step validates Dokploy configuration, provisions Dokploy-native databases,
-///     and deploys application resources to Dokploy via the REST API.
+///     The deploy step validates Dokploy configuration, pushes application images and provisions
+///     Dokploy-native databases in parallel, then deploys application resources via the REST API.
 ///   </description></item>
 /// </list>
 ///
@@ -42,7 +41,8 @@ namespace Aspire.Hosting;
 /// <list type="bullet">
 ///   <item><description><c>publish-{name}</c> — Runs the exact Aspire.Hosting.Docker publish implementation. RequiredBy <c>Publish</c>.</description></item>
 ///   <item><description><c>prepare-{name}</c> — Runs the exact Aspire.Hosting.Docker prepare implementation before deployment.</description></item>
-///   <item><description><c>deploy-{name}</c> — Validates Dokploy configuration and deploys resources to Dokploy. DependsOn <c>prepare-{name}</c>, RequiredBy <c>Deploy</c>.</description></item>
+///   <item><description><c>dokploy-validate-{name}</c> through <c>dokploy-summary-{name}</c> — Validates configuration, reconciles project state, handles registry, runs images/databases in parallel before applications, releases changed applications, and writes the Dokploy summary. The final summary step is RequiredBy <c>Deploy</c>.</description></item>
+///   <item><description><c>dokploy-destroy-validate-{name}</c> through <c>dokploy-destroy-summary-{name}</c> — Resolves the destroy target, deletes Dokploy applications, native databases, auto-registry resources, removes the empty project shell, and writes the destroy summary. The final summary step is RequiredBy <c>Destroy</c>.</description></item>
 /// </list>
 ///
 /// <para><b>Configuration:</b></para>
@@ -54,93 +54,89 @@ namespace Aspire.Hosting;
 /// </remarks>
 public static class DokployEnvironmentExtensions
 {
-    private static readonly Type s_dockerComposeInfrastructureType =
-        typeof(DockerComposeEnvironmentResource).Assembly.GetType("Aspire.Hosting.Docker.DockerComposeInfrastructure")
-        ?? throw new InvalidOperationException("Could not find Docker compose infrastructure type.");
-
-    private static readonly PropertyInfo s_dashboardProperty =
-        typeof(DockerComposeEnvironmentResource).GetProperty("Dashboard", BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new InvalidOperationException("Could not find Docker compose dashboard property.");
-
-    private static readonly MethodInfo s_createDashboardMethod =
-        typeof(DockerComposeAspireDashboardResourceBuilderExtensions).GetMethod(
-            "CreateDashboard",
-            BindingFlags.Static | BindingFlags.NonPublic)
-        ?? throw new InvalidOperationException("Could not find Docker compose dashboard factory method.");
-
-    private static IDistributedApplicationBuilder AddDokployDockerComposeInfrastructure(this IDistributedApplicationBuilder builder)
-    {
-        builder.Services.TryAddEnumerable(
-            ServiceDescriptor.Singleton(typeof(IDistributedApplicationEventingSubscriber), s_dockerComposeInfrastructureType));
-
-        return builder;
-    }
-
     /// <summary>
-    /// Adds a Dokploy deployment environment to the Aspire application model.
-    /// When the AppHost is published, all resources are automatically deployed
-    /// to the configured Dokploy instance using Docker-backed publish artifacts and Dokploy deployment steps.
+    /// Adds a Docker Compose publishing environment whose deploy step targets Dokploy.
     /// </summary>
     /// <param name="builder">The distributed application builder.</param>
-    /// <param name="name">
-    /// A logical name for the Dokploy environment resource (e.g., "dokploy", "staging", "production").
-    /// This name is used in the Aspire resource model and dashboard.
-    /// </param>
-    /// <returns>
-    /// An <see cref="IResourceBuilder{T}"/> for further configuration
-    /// via methods such as <see cref="WithServerId"/>, <see cref="WithDashboard(bool)"/>,
-    /// and <see cref="WithContainerRegistry"/>.
-    /// </returns>
-    /// <example>
-    /// <code>
-    /// var builder = DistributedApplication.CreateBuilder(args);
-    ///
-    /// // Add Dokploy as the deployment target. The first deploy will prompt
-    /// // for the Dokploy server URL, API key, project name, and environment.
-    /// builder.AddDokployEnvironment("my-roadmap");
-    ///
-    /// // ... add other resources ...
-    /// builder.Build().Run();
-    /// </code>
-    /// </example>
+    /// <param name="name">A logical name for the deployment environment.</param>
+    /// <returns>The Docker Compose environment builder configured for Dokploy deployment.</returns>
     [AspireExport("addDokployEnvironment", Description = "Adds a Dokploy publishing environment")]
-    public static IResourceBuilder<DokployEnvironmentResource> AddDokployEnvironment(
+    public static IResourceBuilder<DockerComposeEnvironmentResource> AddDokployEnvironment(
         this IDistributedApplicationBuilder builder,
         string name)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        builder.AddDokployDockerComposeInfrastructure();
+        ArgumentException.ThrowIfNullOrEmpty(name);
 
-        // Check if a Dokploy environment already exists (only one allowed)
-        if (builder.Resources.OfType<DokployEnvironmentResource>().SingleOrDefault() is { } existingResource)
+        return builder.AddDockerComposeEnvironment(name)
+            .WithDokployDeploymentTarget();
+    }
+
+    /// <summary>
+    /// Configures an existing Docker Compose publishing environment to deploy to Dokploy.
+    /// </summary>
+    /// <param name="environment">The Docker Compose environment builder.</param>
+    /// <returns>The same builder for chaining.</returns>
+    [AspireExport("withDokployDeploymentTarget", Description = "Deploys a Docker Compose publishing environment to Dokploy")]
+    public static IResourceBuilder<DockerComposeEnvironmentResource> WithDokployDeploymentTarget(
+        this IResourceBuilder<DockerComposeEnvironmentResource> environment)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+
+        if (environment.ApplicationBuilder.ExecutionContext.IsRunMode)
         {
-            return builder.CreateResourceBuilder(existingResource);
+            return environment;
         }
 
-        var resource = new DokployEnvironmentResource(name)
-        {
-            DeploymentEnvironmentName = "production"
-        };
+        var target = GetOrCreateDokployTarget(environment.Resource);
+        EnsureDokployParameters(environment.ApplicationBuilder, environment.Resource.Name, target);
 
-        var dashboard = ((IResourceBuilder<DockerComposeAspireDashboardResource>)s_createDashboardMethod.Invoke(null, [builder, "aspire-dashboard"])!)
-            .PublishAsDockerComposeService((_, service) =>
+        environment.ConfigureComposeFile(target.CaptureComposeFile);
+        ConfigureDokployPipeline(environment, target);
+
+        return environment;
+    }
+
+    private static DokployDeploymentTargetAnnotation GetOrCreateDokployTarget(DockerComposeEnvironmentResource resource)
+    {
+        if (resource.TryGetLastAnnotation<DokployDeploymentTargetAnnotation>(out var annotation))
+        {
+            return annotation;
+        }
+
+        annotation = new DokployDeploymentTargetAnnotation();
+        resource.Annotations.Add(annotation);
+        return annotation;
+    }
+
+    private static void EnsureDokployParameters(
+        IDistributedApplicationBuilder builder,
+        string defaultProjectName,
+        DokployDeploymentTargetAnnotation target)
+    {
+        target.ServerUrlParameter ??= builder.AddParameter("dokploy-url")
+            .WithDescription("URL of the Dokploy server to deploy to.")
+            .Resource;
+
+        target.ApiKeyParameter ??= builder.AddParameter("dokploy-api-key", secret: true)
+            .WithDescription("API key for authenticating with the Dokploy server.")
+            .Resource;
+
+        target.ProjectNameParameter ??= builder.AddParameter("dokploy-project-name")
+            .WithDescription("Target Dokploy project name. Leave empty to use the environment name.")
+            .WithCustomInput(parameter => new()
             {
-                service.Restart = "always";
-            });
-        s_dashboardProperty.SetValue(resource, dashboard);
+                Name = parameter.Name,
+                Label = "Dokploy project name",
+                Description = parameter.Description,
+                InputType = InputType.Text,
+                Placeholder = defaultProjectName,
+                Value = defaultProjectName,
+                Required = true
+            })
+            .Resource;
 
-        if (builder.ExecutionContext.IsRunMode)
-        {
-            // In run mode, the Dokploy environment is not needed —
-            // return a builder that isn't added to the application model
-            return builder.CreateResourceBuilder(resource);
-        }
-
-        resource.ServerUrlParameter = builder.AddParameter("dokploy-url").Resource;
-        resource.ApiKeyParameter = builder.AddParameter("dokploy-api-key", secret: true).Resource;
-        resource.ProjectNameParameter = builder.AddParameter("dokploy-project-name").Resource;
-        resource.DeploymentEnvironmentNameParameter = builder.AddParameter("dokploy-environment")
+        target.DeploymentEnvironmentNameParameter ??= builder.AddParameter("dokploy-environment")
             .WithDescription("Target Dokploy environment inside the project. Leave empty to use production.")
             .WithCustomInput(parameter => new()
             {
@@ -153,115 +149,226 @@ public static class DokployEnvironmentExtensions
                 Required = false
             })
             .Resource;
-
-        // In publish mode, add the resource to the application model
-        // but exclude it from the manifest (it's not a traditional publishable resource).
-        // Pipeline steps are registered via PipelineStepAnnotation in the constructor.
-        return builder.AddResource(resource)
-            .ExcludeFromManifest();
     }
 
-    /// <summary>
-    /// Enables or disables the Aspire Dashboard container for telemetry visualization
-    /// in the deployed Docker Compose environment.
-    /// </summary>
-    /// <param name="builder">The Dokploy environment resource builder.</param>
-    /// <param name="enabled">Whether to enable the dashboard. Default is <c>true</c>.</param>
-    /// <returns>The resource builder for chaining.</returns>
-    /// <remarks>
-    /// <para>
-    /// When enabled, an Aspire Dashboard container (<c>mcr.microsoft.com/dotnet/aspire-dashboard</c>)
-    /// is added to the generated Docker Compose file. All other services are automatically configured
-    /// to send OpenTelemetry (OTLP) telemetry to the dashboard via the <c>OTEL_EXPORTER_OTLP_ENDPOINT</c>
-    /// environment variable.
-    /// </para>
-    /// <para>
-    /// The dashboard is enabled by default, matching the behavior of
-    /// <c>DockerComposeEnvironmentResource.WithDashboard()</c> in <c>Aspire.Hosting.Docker</c>.
-    /// </para>
-    /// </remarks>
-    /// <example>
-    /// <code>
-    /// // Dashboard enabled by default
-    /// builder.AddDokployEnvironment("dokploy");
-    ///
-    /// // Explicitly disable the dashboard
-    /// builder.AddDokployEnvironment("dokploy").WithDashboard(false);
-    /// </code>
-    /// </example>
-    [AspireExport("withDashboard", Description = "Enables or disables the Aspire dashboard for the Dokploy environment")]
-    public static IResourceBuilder<DokployEnvironmentResource> WithDashboard(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        bool enabled = true)
+    private static void ConfigureDokployPipeline(
+        IResourceBuilder<DockerComposeEnvironmentResource> environment,
+        DokployDeploymentTargetAnnotation target)
     {
-        ArgumentNullException.ThrowIfNull(builder);
-
-        builder.Resource.DashboardEnabled = enabled;
-        return builder;
-    }
-
-    /// <summary>
-    /// Allows setting the properties of a Dokploy environment resource, including inherited Docker Compose settings.
-    /// </summary>
-    [AspireExportIgnore(Reason = "General-purpose configuration method for Dokploy environment resources. Not intended for direct use in most scenarios.")]
-    public static IResourceBuilder<DokployEnvironmentResource> WithProperties(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        Action<DokployEnvironmentResource> configure)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(configure);
-
-        configure(builder.Resource);
-        return builder;
-    }
-
-    /// <summary>
-    /// Configures the Dokploy environment to use the specified container registry as the default
-    /// for all resources that don't have an explicit <c>WithContainerRegistry</c> call.
-    /// </summary>
-    /// <param name="builder">The Dokploy environment resource builder.</param>
-    /// <param name="registry">The container registry resource builder.</param>
-    /// <returns>The resource builder for chaining.</returns>
-    /// <remarks>
-    /// <para>
-    /// When deploying to Dokploy, container images built from <c>ProjectResource</c> instances need to be
-    /// pushed to a container registry so that the Dokploy server can pull them. Use this method to
-    /// set a default registry for all project resources.
-    /// </para>
-    /// <para>
-    /// To set a registry on individual resources instead, use the standard Aspire
-    /// <c>WithContainerRegistry</c> extension method on each resource:
-    /// </para>
-    /// <code>
-    /// var registry = builder.AddContainerRegistry("docker-hub", "docker.io", "myusername");
-    /// builder.AddProject&lt;MyProject&gt;("myproject").WithContainerRegistry(registry);
-    /// </code>
-    /// </remarks>
-    /// <example>
-    /// <code>
-    /// var registry = builder.AddContainerRegistry("ghcr", "ghcr.io", "myorg");
-    ///
-    /// builder.AddDokployEnvironment("dokploy")
-    ///     .WithContainerRegistry(registry);
-    /// </code>
-    /// </example>
-    [AspireExport("withContainerRegistry", Description = "Configures the Dokploy environment to use a default container registry")]
-    public static IResourceBuilder<DokployEnvironmentResource> WithContainerRegistry<TContainerRegistry>(
-        this IResourceBuilder<DokployEnvironmentResource> builder,
-        IResourceBuilder<TContainerRegistry> registry)
-        where TContainerRegistry : IResource, IContainerRegistry
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentNullException.ThrowIfNull(registry);
-
-        builder.Resource.DefaultContainerRegistry = registry.Resource;
-        var existingAnnotation = builder.Resource.Annotations.OfType<ContainerRegistryReferenceAnnotation>().FirstOrDefault();
-        if (existingAnnotation is not null)
+        if (target.PipelineConfigured)
         {
-            builder.Resource.Annotations.Remove(existingAnnotation);
+            return;
         }
 
-        builder.Resource.Annotations.Add(new ContainerRegistryReferenceAnnotation(registry.Resource));
-        return builder;
+        var resource = environment.Resource;
+        var stepAnnotations = resource.Annotations
+            .OfType<PipelineStepAnnotation>()
+            .ToArray();
+
+        foreach (var annotation in stepAnnotations)
+        {
+            var wrapper = new PipelineStepAnnotation(async factoryContext =>
+            {
+                var steps = new List<PipelineStep>(await annotation.CreateStepsAsync(factoryContext).ConfigureAwait(false));
+                var dockerComposeUpStepName = $"docker-compose-up-{resource.Name}";
+                var dockerComposeDestroyStepName = $"destroy-compose-{resource.Name}";
+                var dokployValidateStepName = $"dokploy-validate-{resource.Name}";
+                var dokployProjectStepName = $"dokploy-project-{resource.Name}";
+                var dokployRegistryStepName = $"dokploy-registry-{resource.Name}";
+                var dokployImagesStepName = $"dokploy-images-{resource.Name}";
+                var dokployDatabasesStepName = $"dokploy-databases-{resource.Name}";
+                var dokployApplicationsStepName = $"dokploy-applications-{resource.Name}";
+                var dokployReleaseStepName = $"dokploy-release-{resource.Name}";
+                var dokploySummaryStepName = $"dokploy-summary-{resource.Name}";
+                var dokployDestroyValidateStepName = $"dokploy-destroy-validate-{resource.Name}";
+                var dokployDestroyDiscoverStepName = $"dokploy-destroy-discover-{resource.Name}";
+                var dokployDestroyApplicationsStepName = $"dokploy-destroy-applications-{resource.Name}";
+                var dokployDestroyDatabasesStepName = $"dokploy-destroy-databases-{resource.Name}";
+                var dokployDestroyRegistryStepName = $"dokploy-destroy-registry-{resource.Name}";
+                var dokployDestroyProjectStepName = $"dokploy-destroy-project-{resource.Name}";
+                var dokployDestroySummaryStepName = $"dokploy-destroy-summary-{resource.Name}";
+
+                foreach (var step in steps)
+                {
+                    ReplaceStepReference(step.RequiredBySteps, dockerComposeUpStepName, dokployImagesStepName);
+                    ReplaceStepReference(step.DependsOnSteps, dockerComposeUpStepName, dokploySummaryStepName);
+                    ReplaceStepReference(step.RequiredBySteps, dockerComposeDestroyStepName, dokployDestroyValidateStepName);
+                    ReplaceStepReference(step.DependsOnSteps, dockerComposeDestroyStepName, dokployDestroySummaryStepName);
+                }
+
+                steps.RemoveAll(step => string.Equals(step.Name, dockerComposeUpStepName, StringComparison.Ordinal));
+                steps.RemoveAll(step => string.Equals(step.Name, dockerComposeDestroyStepName, StringComparison.Ordinal));
+                steps.RemoveAll(step => IsDokployStepForResource(step, resource));
+                steps.RemoveAll(IsDockerComposePrintSummaryStep);
+
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dockerComposeUpStepName,
+                    $"Resolve Docker Compose build prerequisites for Dokploy environment {resource.Name}",
+                    _ => Task.CompletedTask,
+                    [$"prepare-{resource.Name}"],
+                    tags: ["dokploy-compat"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dockerComposeDestroyStepName,
+                    $"Resolve Docker Compose destroy prerequisites for Dokploy environment {resource.Name}",
+                    _ => Task.CompletedTask,
+                    [WellKnownPipelineSteps.DestroyPrereq],
+                    tags: ["dokploy-compat"]));
+
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployValidateStepName,
+                    $"Validate Dokploy configuration for environment {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ValidateDokployDeploymentAsync(ctx, resource, target),
+                    [$"prepare-{resource.Name}"],
+                    tags: ["dokploy-deploy", "dokploy-validate"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployProjectStepName,
+                    $"Reconcile Dokploy project and environment for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ReconcileDokployProjectAsync(ctx, resource, target),
+                    [dokployValidateStepName],
+                    tags: ["dokploy-deploy", "dokploy-project"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployRegistryStepName,
+                    $"Ensure Dokploy project registry for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.EnsureDokployRegistryAsync(ctx, resource, target),
+                    [dokployProjectStepName],
+                    tags: ["dokploy-deploy", "dokploy-registry"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployImagesStepName,
+                    $"Push application images for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.PushDokployImagesAsync(ctx, resource, target),
+                    [dokployRegistryStepName, dockerComposeUpStepName],
+                    tags: ["dokploy-deploy", "dokploy-images"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDatabasesStepName,
+                    $"Provision Dokploy databases for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ProvisionDokployDatabasesAsync(ctx, resource, target),
+                    [dokployRegistryStepName],
+                    tags: ["dokploy-deploy", "dokploy-databases"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployApplicationsStepName,
+                    $"Configure Dokploy applications for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ConfigureDokployApplicationsAsync(ctx, resource, target),
+                    [dokployImagesStepName, dokployDatabasesStepName],
+                    tags: ["dokploy-deploy", "dokploy-applications"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployReleaseStepName,
+                    $"Release changed Dokploy applications for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ReleaseDokployApplicationsAsync(ctx, resource, target),
+                    [dokployApplicationsStepName],
+                    tags: ["dokploy-deploy", "dokploy-release"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokploySummaryStepName,
+                    $"Write Dokploy deployment summary for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.WriteDokployDeploymentSummaryAsync(ctx, resource, target),
+                    [dokployReleaseStepName],
+                    [WellKnownPipelineSteps.Deploy],
+                    ["dokploy-deploy", "dokploy-summary"]));
+
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyValidateStepName,
+                    $"Validate Dokploy destroy configuration for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.ValidateDokployDestroyAsync(ctx, resource, target),
+                    [dockerComposeDestroyStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-validate"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyDiscoverStepName,
+                    $"Discover Dokploy destroy target for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DiscoverDokployDestroyTargetAsync(ctx, resource, target),
+                    [dokployDestroyValidateStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-discover"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyApplicationsStepName,
+                    $"Destroy Dokploy applications for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DestroyDokployApplicationsAsync(ctx, resource, target),
+                    [dokployDestroyDiscoverStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-applications"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyDatabasesStepName,
+                    $"Destroy Dokploy databases for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DestroyDokployDatabasesAsync(ctx, resource, target),
+                    [dokployDestroyApplicationsStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-databases"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyRegistryStepName,
+                    $"Destroy Dokploy project registry for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.DestroyDokployRegistryAsync(ctx, resource, target),
+                    [dokployDestroyDatabasesStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-registry"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroyProjectStepName,
+                    $"Remove empty Dokploy project for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.RemoveEmptyDokployProjectAsync(ctx, resource, target),
+                    [dokployDestroyRegistryStepName],
+                    tags: ["dokploy-destroy", "dokploy-destroy-project"]));
+                steps.Add(CreateDokployStep(
+                    resource,
+                    dokployDestroySummaryStepName,
+                    $"Write Dokploy destroy summary for {resource.Name}",
+                    ctx => DokployDeploymentExecutor.WriteDokployDestroySummaryAsync(ctx, resource, target),
+                    [dokployDestroyProjectStepName],
+                    [WellKnownPipelineSteps.Destroy],
+                    ["dokploy-destroy", "dokploy-destroy-summary"]));
+
+                return steps;
+            });
+
+            resource.Annotations.Remove(annotation);
+            resource.Annotations.Add(wrapper);
+        }
+
+        target.PipelineConfigured = true;
     }
+
+    private static bool IsDockerComposePrintSummaryStep(PipelineStep step)
+        => step.Tags.Any(tag => string.Equals(tag, "print-summary", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsDokployStepForResource(PipelineStep step, DockerComposeEnvironmentResource resource)
+        => ReferenceEquals(step.Resource, resource)
+           && step.Tags.Any(tag => string.Equals(tag, "dokploy", StringComparison.OrdinalIgnoreCase));
+
+    private static void ReplaceStepReference(List<string> stepNames, string oldStepName, string newStepName)
+    {
+        for (var i = 0; i < stepNames.Count; i++)
+        {
+            if (string.Equals(stepNames[i], oldStepName, StringComparison.Ordinal))
+            {
+                stepNames[i] = newStepName;
+            }
+        }
+    }
+
+    private static PipelineStep CreateDokployStep(
+        DockerComposeEnvironmentResource resource,
+        string name,
+        string description,
+        Func<PipelineStepContext, Task> action,
+        string[] dependsOnSteps,
+        string[]? requiredBySteps = null,
+        string[]? tags = null)
+        => new()
+        {
+            Name = name,
+            Description = description,
+            Tags = tags is null ? ["dokploy"] : ["dokploy", .. tags],
+            Resource = resource,
+            Action = action,
+            DependsOnSteps = new List<string>(dependsOnSteps),
+            RequiredBySteps = requiredBySteps is null ? [] : new List<string>(requiredBySteps),
+        };
 }
