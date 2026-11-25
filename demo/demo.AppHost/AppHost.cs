@@ -1,5 +1,6 @@
 #pragma warning disable ASPIRECSHARPAPPS001
 
+using Aspire.Hosting;
 using Scalar.Aspire;
 
 var builder = DistributedApplication.CreateBuilder(args);
@@ -28,7 +29,7 @@ builder.AddDokployMongoDB("mongodb");
 builder.AddMongoDB("mongo2")
     .PublishAsDokployDatabase();
 
-var server = builder.AddCSharpApp("server", "../demo.Server")
+var server = builder.AddDotnetProject("server", "../demo.Server/demo.Server.csproj")
     .WithReference(database)
     .WithHttpHealthCheck("/health")
     .WithExternalHttpEndpoints();
